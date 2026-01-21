@@ -1,4 +1,7 @@
 import os
+os.environ["USE_LIBUV"] = "0"
+
+import os
 import glob
 import random
 import numpy as np

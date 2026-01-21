@@ -1,15 +1,13 @@
 import torch
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
 import json
-from pathlib import Path
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from pathlib import Path
 
 # 自定义模块
 from src.dataset_rev import VQVAEDataset 
@@ -91,65 +89,54 @@ def plot_paper_curves(log_path, output_dir):
     plt.close()
 
 def setup_experiment():
-    # 注意：在多卡模式下，只有主进程需要创建文件夹
-    results_root = ROOT_DIR / "exp_results"
+    results_root = ROOT_DIR / "exp_results" 
+    results_root.mkdir(exist_ok=True)
+    
     exp_dir = results_root / CONFIG["experiment_name"]
-    model_dir = exp_dir / CONFIG["model_output_dir"]
-    log_dir = exp_dir / CONFIG["log_output_dir"]
+    # 如果存在就报错，防止覆盖
+    if exp_dir.exists():
+         print(f"⚠️ 警告: 实验目录 {exp_dir} 已存在")
+    
+    exp_dir.mkdir(exist_ok=True)
+    
     config_path = exp_dir / "config.json"
+    with open(str(config_path), "w", encoding="utf-8") as f:
+        json.dump(CONFIG, f, indent=4, ensure_ascii=False)
+    
+    model_dir = exp_dir / CONFIG["model_output_dir"]
+    model_dir.mkdir(exist_ok=True)
 
-    # 只让主进程创建目录
-    # 我们会在 train_vqvae 里判断 is_main_process 再调用这个
-    return results_root, exp_dir, config_path, model_dir, log_dir
+    log_dir = exp_dir / CONFIG["log_output_dir"]
+    log_dir.mkdir(exist_ok=True)
+    
+    log_csv_path = log_dir / "training_log.csv"
+    if not log_csv_path.exists():
+        with open(str(log_csv_path), 'w') as f:
+            f.write("Epoch,Step,Total_Loss,Recon_Loss,VQ_Loss,Perplexity\n")
+
+    return model_dir, log_dir, log_csv_path
 
 def train_vqvae():
-    # 1. 初始化 Accelerator
-    # mixed_precision='fp16' 或 'bf16' (A100 建议用 bf16，如果代码报错则改回 fp16)
-    accelerator = Accelerator(mixed_precision="bf16", log_with="all")
+    # 1. 自动检测设备
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        gpu_count = torch.cuda.device_count()
+        print(f"🚀 Training on {gpu_count} GPUs!")
+    else:
+        device = torch.device("cpu")
+        print("⚠️ Warning: Training on CPU!")
+        gpu_count = 0
 
-    # 设置随机种子，保证多卡同步
-    set_seed(42)
+    # 2. 准备实验目录
+    save_dir, log_dir, log_csv_path = setup_experiment()
 
-    # 只有主进程负责创建目录和日志
-    if accelerator.is_main_process:
-        results_root, exp_dir, config_path, save_dir, log_dir = setup_experiment()
-        # 创建目录
-        results_root.mkdir(exist_ok=True)
-        try:
-            exp_dir.mkdir(exist_ok=False) 
-        except FileExistsError:
-            print(f"警告：实验目录 {exp_dir} 已存在。")
-            
-        model_dir = save_dir # setup_experiment 返回的是 Path
-        model_dir.mkdir(exist_ok=True, parents=True)
-        log_dir.mkdir(exist_ok=True, parents=True)
-
-        # 保存配置
-        with open(str(config_path), "w", encoding="utf-8") as f:
-            json.dump(CONFIG, f, indent=4, ensure_ascii=False)
-        
-        # 初始化 CSV
-        log_csv_path = os.path.join(log_dir, "training_log.csv")
-        with open(log_csv_path, 'w') as f:
-            f.write("Epoch,Step,Total_Loss,Recon_Loss,VQ_Loss,Perplexity\n")
-    
-    # 等待主进程创建好目录，防止其他进程报错
-    accelerator.wait_for_everyone()
-    
-    # 如果不是主进程，变量需要定义一下防止报错，虽然用不到
-    if not accelerator.is_main_process:
-        save_dir = None
-        log_dir = None
-        log_csv_path = None
-
-    # 2. 数据集
+    # 3. 数据集
     dataset = VQVAEDataset(
         data_dir=CONFIG['processed_data_dir'], 
         volume_size=CONFIG['image_size'],
         augment=True
     )
     
-    # 注意：accelerate 会自动处理多卡采样，shuffle=True 即可
     dataloader = DataLoader(
         dataset, 
         batch_size=CONFIG['batch_size'], 
@@ -158,91 +145,84 @@ def train_vqvae():
         pin_memory=True
     )
     
-    # 3. 模型
+    # 4. 模型初始化
     model = VQVAE3D(
         in_channels=1, 
         embedding_dim=CONFIG['embedding_dim'], 
         num_embeddings=CONFIG['num_embeddings']
     )
-    # 注意：不要手动 .to(device)，也不要手动 nn.DataParallel
+    
+    # --- 关键修改：启用 DataParallel (DP) ---
+    # 只要显卡数量 > 1，就自动用多卡
+    if gpu_count > 1:
+        model = nn.DataParallel(model)
+    
+    model.to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['lr'])
     
-    # --- 关键步骤：Prepare ---
-    # accelerate 会自动把模型、优化器、数据加载器分配到不同的 GPU 上
-    model, optimizer, dataloader = accelerator.prepare(
-        model, optimizer, dataloader
-    )
-    
-    print(f"Process {accelerator.process_index} ready.")
-
     global_step = 0
     
-    # 4. 训练循环
+    # 5. 训练循环
     for epoch in range(CONFIG['epochs']):
         model.train()
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}")
         
-        # 只有主进程显示进度条
-        if accelerator.is_main_process:
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}", disable=False)
-        else:
-            pbar = dataloader # 其他进程静默运行
-            
         for batch in pbar:
             global_step += 1
             
-            # 不需要 batch["GT"].to(device)，accelerator 已处理 dataloader
-            img = batch["GT"]
+            # 手动把数据搬到 GPU (DataParallel 会自动切分分发)
+            img = batch["GT"].to(device)
             
-            # --- Forward ---
-            # 这里的 model 已经被 wrap 成了 DDP 模型
+            optimizer.zero_grad()
+            
+            # Forward
             img_recon, vq_loss, perplexity = model(img)
             
+            # Loss 计算 
+            # DataParallel 返回的 Loss 是 [Batch_Size] 大小的向量，或者 [GPU_Count] 大小
+            # 所以这里必须做一次 mean()，否则反向传播会报错
             recon_loss = torch.mean((img_recon - img)**2)
+            vq_loss = vq_loss.mean() 
+            perplexity = perplexity.mean()
+
             loss = recon_loss + vq_loss
             
-            # --- Backward (修改点) ---
-            optimizer.zero_grad()
-            accelerator.backward(loss) # 代替 loss.backward()
+            loss.backward()
             optimizer.step()
             
-            # --- Logging (只在主进程) ---
-            if accelerator.is_main_process:
-                # 记录到 CSV
-                with open(log_csv_path, 'a') as f:
-                    f.write(f"{epoch+1},{global_step},{loss.item():.6f},{recon_loss.item():.6f},{vq_loss.item():.6f},{perplexity.item():.6f}\n")
+            # 记录日志
+            with open(str(log_csv_path), 'a') as f:
+                f.write(f"{epoch+1},{global_step},{loss.item():.6f},{recon_loss.item():.6f},{vq_loss.item():.6f},{perplexity.item():.6f}\n")
 
-                pbar.set_postfix(
-                    Recon=f"{recon_loss.item():.4f}", 
-                    VQ=f"{vq_loss.item():.4f}",
-                    Perp=f"{perplexity.item():.1f}"
-                )
+            pbar.set_postfix(
+                Recon=f"{recon_loss.item():.4f}", 
+                VQ=f"{vq_loss.item():.4f}",
+                Perp=f"{perplexity.item():.1f}"
+            )
             
-        # --- 保存模型 (只在主进程) ---
-        # 等待所有 GPU 跑完这个 epoch
-        accelerator.wait_for_everyone()
-        
-        if accelerator.is_main_process and (epoch+1) % 5 == 0:
+        # 保存模型
+        if (epoch+1) % 5 == 0:
             print(f"Epoch {epoch+1} Done. Saving model...")
-            # unwrap_model 取出原始模型，防止保存 DDP 包装层的参数前缀
-            unwrapped_model = accelerator.unwrap_model(model)
-            torch.save(unwrapped_model.state_dict(), os.path.join(save_dir, f"vqvae_epoch_{epoch+1}.pth"))
+            # 如果用了 DataParallel，真实模型在 model.module 里
+            if isinstance(model, nn.DataParallel):
+                state_dict = model.module.state_dict()
+            else:
+                state_dict = model.state_dict()
+                
+            torch.save(state_dict, save_dir / f"vqvae_epoch_{epoch+1}.pth")
             
-            # 保存可视化图 (需要取一个样本)
-            # 这是一个小技巧：我们需要构造一个简单的推理过程来画图
-            unwrapped_model.eval()
+            # 简单的可视化 (为了避免多卡推理麻烦，我们简单地取一个样本做一次单次推理)
             with torch.no_grad():
-                # 从当前 batch 取一张图画一下即可，注意要把它转到 CPU
-                sample_img = img[0:1].detach() # [1, 1, D, H, W]
-                # 因为 unwrapped_model 在 GPU 上，所以可以直接推理
-                recon_img, _, _ = unwrapped_model(sample_img)
-                save_visualization(sample_img, recon_img, epoch+1, log_dir)
-            
-            # 绘制曲线
-            plot_paper_curves(log_csv_path, log_dir)
+                # 构造一个临时的单卡模型来跑这张图，或者直接用 model(img) 取第一个结果
+                # 这里为了简单，直接取 batch 里的第一张图
+                sample_input = img[0:1] # [1, 1, D, H, W]
+                # model 依然是多卡的，它会处理这 1 个样本（虽然有点浪费）
+                recon_out, _, _ = model(sample_input)
+                
+                save_visualization(sample_input, recon_out, epoch+1, log_dir)
 
 def save_visualization(orig, recon, epoch, log_dir):
-    """保存中间切片对比图（保持原样即可）"""
     with torch.no_grad():
         mid_slice_idx = orig.shape[2] // 2
         img_orig = orig[0, 0, mid_slice_idx].cpu().numpy()
@@ -256,83 +236,8 @@ def save_visualization(orig, recon, epoch, log_dir):
         ax[1].set_title(f"Recon Epoch {epoch}")
         ax[1].axis('off')
         plt.tight_layout()
-        plt.savefig(os.path.join(log_dir, f"viz_epoch_{epoch}.png"))
+        plt.savefig(log_dir / f"viz_epoch_{epoch}.png")
         plt.close()
 
 if __name__ == "__main__":
     train_vqvae()
-
-    # 1. 准备目录,初始化 CSV 日志文件
-    results_root, exp_dir, config_path, save_dir, log_dir = setup_experiment()
-    
-    log_csv_path = os.path.join(log_dir, "training_log.csv")
-    if not os.path.exists(log_csv_path):
-        with open(log_csv_path, 'w') as f:
-            f.write("Epoch,Step,Total_Loss,Recon_Loss,VQ_Loss,Perplexity\n")
-
-    # 2. 数据集
-    dataset = VQVAEDataset(
-        data_dir=CONFIG['processed_data_dir'], 
-        volume_size=CONFIG['image_size'],
-        augment=True
-    )
-    
-    dataloader = DataLoader(
-        dataset, 
-        batch_size=CONFIG['batch_size'], 
-        shuffle=True, 
-        num_workers=CONFIG['num_workers'], 
-        pin_memory=True
-    )
-    
-    print(f"Training on Device: {CONFIG['device']}")
-    
-    # 3. 模型
-    model = VQVAE3D(
-        in_channels=1, 
-        embedding_dim=CONFIG['embedding_dim'], 
-        num_embeddings=CONFIG['num_embeddings']
-    ).to(CONFIG['device'])
-    
-    optimizer = optim.Adam(model.parameters(), lr=CONFIG['lr'])
-    
-    # 全局步数计数器
-    global_step = 0
-    
-    # 4. 训练循环
-    for epoch in range(CONFIG['epochs']):
-        model.train()
-        
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}")
-        for batch in pbar:
-            global_step += 1
-            
-            img = batch["GT"].to(CONFIG['device']) 
-            
-            optimizer.zero_grad()
-            img_recon, vq_loss, perplexity = model(img)
-            
-            recon_loss = torch.mean((img_recon - img)**2)
-            loss = recon_loss + vq_loss
-            
-            loss.backward()
-            optimizer.step()
-            
-            # 每一步都记录，这样你的曲线数据点就非常密集，平滑后很好看
-            with open(log_csv_path, 'a') as f:
-                f.write(f"{epoch+1},{global_step},{loss.item():.6f},{recon_loss.item():.6f},{vq_loss.item():.6f},{perplexity.item():.6f}\n")
-
-            pbar.set_postfix(
-                Recon=f"{recon_loss.item():.4f}", 
-                VQ=f"{vq_loss.item():.4f}",
-                Perp=f"{perplexity.item():.1f}"
-            )
-            
-        print(f"Epoch {epoch+1} Done.")
-        
-        # 保存模型
-        if (epoch+1) % 5 == 0:
-            torch.save(model.state_dict(), os.path.join(save_dir, f"vqvae_epoch_{epoch+1}.pth"))
-            save_visualization(img, img_recon, epoch+1, log_dir)
-
-            plot_paper_curves(log_csv_path, log_dir)
