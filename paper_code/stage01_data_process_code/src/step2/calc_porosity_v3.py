@@ -9,9 +9,9 @@ import random
 
 # ================= 核心配置区域 =================
 CONFIG = {
-    "src_root": r"D:\chendou_space\denoised_unalign_NPYdata",          # 输入数据根目录
-    "dst_root": r"D:\chendou_space\Aligned_Training_Data_Interactive", # 输出路径
-    "num_workers": 48,       # 并行核心数 (既用于计算Target Peak，也用于最终处理)
+    "src_root": r"/chendou_space/data/denoised_unalign_NPYdata",          # 输入数据根目录
+    "dst_root": r"/chendou_space/data/aligned_Training_Data_Interactive", # 输出路径
+    "num_workers": 12,       # 并行核心数 (既用于计算Target Peak，也用于最终处理)
     "calib_samples": 3000,   # 计算 Target Peak 时采样的样本数
     "preview_count": 4       # 每次预览时随机抽取的图片数量
 }

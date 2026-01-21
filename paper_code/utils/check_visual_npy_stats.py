@@ -12,7 +12,7 @@ plt.rcParams['axes.unicode_minus'] = False
 """
 
 # 文件路径
-file_path = r"D:\多尺度岩心数据集\Aligned_Training_Data\Cleaned_NPY_Dataset_18\6-6-18_z0_y335_x597.npy"
+file_path = r"/chendou_space/data/aligned_Training_Data_Interactive/Cleaned_NPY_Dataset_20/6-6-20 全部_z5504_y788_x739.npy"
 
 try:
     # 加载数据
@@ -52,7 +52,7 @@ try:
     
     plt.grid(axis='y', linestyle='--', alpha=0.4)
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
 except FileNotFoundError:
     print("错误：未找到文件，请检查路径。")
