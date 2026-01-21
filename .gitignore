@@ -9,15 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# 图片和pdf 文件
-*.png
-*.jpg
-*.jpeg
+# 图片
 *.gif
 *.tif 
 *.tiff
 *.bmp
-*.pdf
 
 # 模型参数
 *.pth
@@ -25,3 +21,4 @@ wheels/
 
 # 数据
 paper_data
+pytorch_pkgs

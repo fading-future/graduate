@@ -5,11 +5,15 @@ import seaborn as sns
 from pathlib import Path
 import os
 
+from utils.get_root_path import get_project_root
+
+DIR_ROOT = get_project_root() # 输出paper_code的路径
+
 # ================= 配置区域 =================
-# 输入：上一步生成的 CSV 报告路径
-CSV_PATH = r"E:\chendou\paper_data\processing_report.csv"
+# 输入：生成的 CSV 报告路径
+CSV_PATH = DIR_ROOT / "utils" / "output_data" / "processing_report.csv"
 # 输出：分析图表保存路径
-OUTPUT_DIR = r"E:\chendou\paper_data\Analysis_Results"
+OUTPUT_DIR = DIR_ROOT / "utils" / "output_data" / "visualization"
 # 图像风格配置
 plt.style.use('seaborn-v0_8-whitegrid') # 使用整洁的科研风格
 # 设置全局字体 (如果有Times New Roman建议使用，没有则使用默认sans-serif)

@@ -5,15 +5,19 @@ import matplotlib.gridspec as gridspec
 import os
 from pathlib import Path
 
+from utils.get_root_path import get_project_root
+
+DIR_ROOT = get_project_root() # 输出paper_code的路径
+
 # ================= 配置区域 =================
 # CSV 路径
-CSV_PATH = r"E:\chendou\paper_data\processing_report.csv"
+CSV_PATH = DIR_ROOT / "utils" / "output_data" / "processing_report.csv"
 # 原始数据根目录
-SRC_ROOT = r"D:\多尺度岩心数据集\Raw_Data"
+SRC_ROOT = r"D:\chendou_space\denoised_unalign_NPYdata"
 # 你的 Target Peak (根据处理报告填写)
-TARGET_PEAK = 152
+TARGET_PEAK = 149
 # 你的 Offset (阈值 = Target - Offset)
-OFFSET = 30
+OFFSET = 28
 THRESHOLD = TARGET_PEAK - OFFSET
 # ===========================================
 
@@ -29,12 +33,12 @@ def plot_thesis_verification(csv_path, src_root, target_peak, threshold):
     df_sorted = df.sort_values(by='porosity')
     
     # 选出最极端的样本用于画直方图组 (各选10个，体现统计规律)
-    dense_group = df_sorted.head(20)
-    porous_group = df_sorted.tail(20)
+    dense_group = df_sorted.head(10)
+    porous_group = df_sorted.tail(10)
     
     # 选出最极端的1个样本用于画切片展示
-    sample_dense = df_sorted.iloc[20]
-    sample_porous = df_sorted.iloc[-10]
+    sample_dense = df_sorted.iloc[40]
+    sample_porous = df_sorted.iloc[-1]
     
     # 2. 设置画布
     fig = plt.figure(figsize=(12, 10), dpi=300)
@@ -136,7 +140,7 @@ def plot_thesis_verification(csv_path, src_root, target_peak, threshold):
     ax_r1[2].set_title("Step 3: Segmentation", fontweight='bold')
     
     plt.tight_layout()
-    plt.savefig("Thesis_Verification_Chart.png", bbox_inches='tight')
+    plt.savefig(DIR_ROOT / "utils" / "output_data" / "visualization" / "Thesis_Verification_Chart.png", bbox_inches='tight')
     print("图表已生成: Thesis_Verification_Chart.png")
     plt.show()
 
