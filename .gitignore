@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 图片和pdf 文件
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.tif 
+*.tiff
+*.bmp
+*.pdf
+
+# 模型参数
+*.pth
+*.pt
+
+# 数据
+paper_data
