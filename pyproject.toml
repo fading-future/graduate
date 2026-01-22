@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "accelerate>=1.12.0",
+    "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",
     "opencv-python>=4.13.0.90",
     "pandas>=2.3.3",
@@ -19,5 +20,5 @@ dependencies = [
 
 [[tool.uv.index]]
 name = "tsinghua"
-url = "https://pypi.tuna.tsinghua.edu.cn"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true

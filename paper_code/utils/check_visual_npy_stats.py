@@ -1,16 +1,19 @@
+#%%
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 
 # 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+# 解决中文显示问题
+plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans'] # 优先使用中文字体
+plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 """
 检查npy 文件的元数据和基本统计信息
 绘制npy 文件（REV）体素值的分布直方图
 """
 
+#%%
 # 文件路径
 file_path = r"/chendou_space/data/aligned_Training_Data_Interactive/Cleaned_NPY_Dataset_20/6-6-20 全部_z5504_y788_x739.npy"
 
@@ -52,9 +55,10 @@ try:
     
     plt.grid(axis='y', linestyle='--', alpha=0.4)
     plt.tight_layout()
-    # plt.show()
+    plt.show()
 
 except FileNotFoundError:
     print("错误：未找到文件，请检查路径。")
 except Exception as e:
     print(f"发生错误: {e}")
+# %%
