@@ -37,7 +37,7 @@ def process_slice_task(args):
     """
     单个切片的处理核心逻辑
     Args:
-        slice_data: 原始切片 numpy array
+        slice_data: 原始的单个切片 numpy array
         mask_local: 全局圆柱 Mask
         denoise_type: 降噪类型
         denoise_h: 降噪参数
@@ -123,6 +123,13 @@ class EnhancedRockCorePipeline:
             os.makedirs(dst_root)
 
     def _read_img_raw(self, path):
+        """
+        _read_img_raw - 读取原始图像 (使用 OpenCV 解码 tif)。可以避免中文路径问题
+        Args:
+        :param self: 说明
+        :param path: 图像路径
+        :return: 图像 numpy array 或 None
+        """
         try:
             raw_data = np.fromfile(path, dtype=np.uint8)
             img = cv2.imdecode(raw_data, cv2.IMREAD_UNCHANGED)
@@ -131,6 +138,16 @@ class EnhancedRockCorePipeline:
             return None
 
     def _detect_global_roi(self, files, sample_count=20):
+        """
+        _detect_global_roi - 探测全局 ROI (岩心圆柱区域)
+        通过随机采样若干切片，使用轮廓检测寻找岩心圆心和半径
+        采用中值和百分位数统计，增强鲁棒性
+        Args:
+        :param self: 说明
+        :param files: 要处理的文件列表
+        :param sample_count: 采样数量
+        :return: (center_x, center_y), radius 或 None
+        """
         print("第一步：全局探测。正在探测该文件夹的全局 ROI (统一坐标系)...")
         indices = np.linspace(0, len(files)-1, sample_count, dtype=int)
         all_centers = []
@@ -169,8 +186,8 @@ class EnhancedRockCorePipeline:
         return avg_center, max_radius
 
     def process_folder(self, folder_name):
+        # 1、根据文件名排序指定文件夹中的文件
         folder_path = os.path.join(self.src_root, folder_name)
-        # 根据文件名排序 (支持 modif 后缀)
         files = sorted(glob.glob(os.path.join(folder_path, "*.tif")), 
                        key=lambda x: int(re.search(r'modif(\d+)', x).group(1)) if re.search(r'modif(\d+)', x) else 0)
         
@@ -178,44 +195,45 @@ class EnhancedRockCorePipeline:
             print("文件数量不足，跳过。")
             return
 
-        # 1. 探测全局 ROI
+        # 2、 探测全局 ROI（寻找岩心圆柱区域）。得到圆心和半径
         roi_info = self._detect_global_roi(files, sample_count=CONFIG['global_roi_sample_count'])
         if not roi_info: 
             print(f"文件夹 {folder_name} 无法找到有效岩心区域")
             return
         (cx, cy), r = roi_info
         
-        # 确定统一的裁剪边界
-        r_pad = int(r * 1.05)
-        # 假设原图尺寸约为 1900-2000，做边界保护
+        # 3、确定统一的裁剪边界，裁剪出局部的ROI 区域，是一个正方形
+        r_pad = int(r * 1.05) # 适当放大一点，避免边缘切掉
         y1, y2 = max(0, cy - r_pad), cy + r_pad
         x1, x2 = max(0, cx - r_pad), cx + r_pad
         
-        # 修正 Mask 大小
+        # 4、确定 Mask 的大小
         roi_h, roi_w = y2 - y1, x2 - x1
         mask_local = np.zeros((roi_h, roi_w), dtype=np.uint8)
-        # 在局部坐标系画圆
+
+        # 5、绘制ROI 区域的圆形 Mask，圆形的值为1，背景为0
         cv2.circle(mask_local, (cx-x1, cy-y1), r, 1, -1)
 
         print(f"开始滑动窗口处理: {folder_name}")
         
-        # 2. Z轴滑动循环
+        # 6、Z轴滑动循环
         for z in tqdm(range(0, len(files) - self.crop_size, self.stride_z), desc="Processing Chunks"):
+            # 6.1 取出当前要处理的堆叠块的文件路径
             chunk_paths = files[z : z + self.crop_size]
             
-            # 2.1 串行读取 IO (IO密集型，多进程提升不大，且容易炸内存，故保持串行)
+            # 6.2 串行循环读取单个CT 图片，裁剪 ROI 区域，组成堆叠
             raw_stack = []
             for p in chunk_paths:
+                # 1、读取单个图片
                 full_img = self._read_img_raw(p)
                 if full_img is None: 
                     # 容错：如果读取失败，补全黑帧
                     raw_stack.append(np.zeros((roi_h, roi_w), dtype=np.uint8))
                 else:
-                    # 边界检查
+                    # 2、裁剪 ROI 区域
                     fh, fw = full_img.shape
                     crop = full_img[y1:min(y2, fh), x1:min(x2, fw)]
-                    # 如果 crop 尺寸不对（比如到了图像边缘），需要 padding
-                    if crop.shape != (roi_h, roi_w):
+                    if crop.shape != (roi_h, roi_w): # 如果 crop 尺寸不对（比如到了图像边缘），需要 padding
                          padded = np.zeros((roi_h, roi_w), dtype=np.uint8)
                          padded[:crop.shape[0], :crop.shape[1]] = crop
                          raw_stack.append(padded)
@@ -224,7 +242,7 @@ class EnhancedRockCorePipeline:
             
             stack = np.array(raw_stack) # (D, H, W)
 
-            # 2.2 并行计算 (归一化 + 降噪 + 二值化)
+            # 6.3 并行计算 (归一化 + 降噪 + 二值化)
             clean_stack = []
             binary_stack = []
             
