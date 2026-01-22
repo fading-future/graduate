@@ -11,7 +11,7 @@ DIR_ROOT = get_project_root() # 输出paper_code的路径
 
 # ================= 配置区域 =================
 # 输入：生成的 CSV 报告路径
-CSV_PATH = DIR_ROOT / "utils" / "output_data" / "processing_report.csv"
+CSV_PATH = "/chendou_space/data/aligned_Training_Data_Interactive/processing_report.csv"
 # 输出：分析图表保存路径
 OUTPUT_DIR = DIR_ROOT / "utils" / "output_data" / "visualization"
 # 图像风格配置
