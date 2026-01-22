@@ -1,0 +1,16 @@
+{
+    "experiment_name": "exp01_256_64_2048",
+    "note": "Stage 1: VQ-VAE 训练。输入256x256x256，使用A100 40GB 4卡训练",
+    "batch_size": 8,
+    "num_workers": 2,
+    "epochs": 300,
+    "lr": 0.0001,
+    "device": "cuda",
+    "gradient_accumulation_steps": 4,
+    "image_size": 256,
+    "embedding_dim": 64,
+    "num_embeddings": 2048,
+    "processed_data_dir": "/chendou_space/data/aligned_Training_Data_Interactive",
+    "model_output_dir": "./models",
+    "log_output_dir": "./logs"
+}

@@ -134,9 +134,20 @@ E:.
 
 
 
+## 5. 远程连接Windows 或者Ubuntu
+
+
+
 # Error(踩坑指南)
 ## 1. `import torch` 导入出错
+现象：在uv 虚拟环境中`import torch` 导入出错，但是在系统的python 环境中`import torch` 导入成功
+错误信息：
+原因：镜像环境缺少驱动文件导致的错误
+
+## 2. Windows 环境下利用accelerate 库做多卡训练
+现象：使用多卡训练，频繁出现环境变量设置，网络通信问题
+错误信息：
+原因：Windows 中对于accelerate 多卡训练库的支持不好。推荐Windows 中直接使用原生的多卡训练库
 
 
-## 2. 
 
