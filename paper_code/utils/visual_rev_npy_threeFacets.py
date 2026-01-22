@@ -1,3 +1,4 @@
+#%%
 import os
 import random
 import numpy as np
@@ -7,26 +8,37 @@ import glob
 """
 检查npy数据（REV 立方体）的三个切面，确认数据的有效性和质量。
 """
+# 设置中文字体
+# 解决中文显示问题
+plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans'] # 优先使用中文字体
+plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 CONFIG = {
     # 可以根据需要调整这里的参数
     'num_samples': 15,  # 随机抽检的样本数量
-    'src_root': r"D:\多尺度岩心数据集\Cleaned_NPY_Dataset_24",  # npy文件所在目录
+    'src_root': r"/chendou_space/data/cleaned_npy_dataset",  # npy文件所在目录
+    
+    # 【关键修改】在这里指定文件名模式
+    'file_pattern': "6-6-20*.npy"  
 }
 
-
-def inspect_npy_files(data_dir, num_samples=3):
+#%%
+def inspect_npy_files(data_dir, file_pattern="*.npy", num_samples=3):
     """
     随机读取几个 .npy 文件并可视化其三个切面
     """
-    files = glob.glob(os.path.join(data_dir, "*.npy"))
+    # 【关键修改】使用 os.path.join 拼接目录和文件名模式
+    search_path = os.path.join(data_dir, file_pattern)
+    files = glob.glob(search_path)
     
     if len(files) == 0:
-        print(f"错误：在 {data_dir} 中没有找到 .npy 文件。请先确保提取脚本运行成功。")
+        print(f"错误：在 {data_dir} 中没有找到匹配模式 '{file_pattern}' 的 .npy 文件。")
+        print("请检查路径是否正确，或是否生成了该前缀的文件。")
         return
 
     print(f"检查目录: {data_dir}")
-    print(f"共找到 {len(files)} 个数据块。正在随机抽检 {num_samples} 个...\n")
+    print(f"筛选模式: {file_pattern}")
+    print(f"共找到 {len(files)} 个匹配的数据块。正在随机抽检 {num_samples} 个...\n")
     
     # 随机选择文件
     samples = random.sample(files, min(len(files), num_samples))
@@ -43,14 +55,14 @@ def inspect_npy_files(data_dir, num_samples=3):
             continue
             
         # 2. 打印统计信息
-        print(f"  尺寸: {volume.shape}") # 应该是 (128, 128, 128)
+        print(f"  尺寸: {volume.shape}") 
         print(f"  数据类型: {volume.dtype}")
         print(f"  数值范围: min={volume.min()}, max={volume.max()}, mean={volume.mean():.2f}")
         
         # 3. 简单的质量判断
         if volume.min() == volume.max():
             print("  [警告] 图像是纯色的（全黑或全白），无效数据！")
-        elif volume.mean() < 500: # 假设值很低
+        elif volume.mean() < 500: 
             print("  [警告] 图像整体过暗，可能截取到了背景区域！")
         else:
             print("  [通过] 数据统计特征正常。")
@@ -78,8 +90,14 @@ def inspect_npy_files(data_dir, num_samples=3):
         
         plt.suptitle(f"Sample: {filename}", fontsize=14)
         plt.tight_layout()
-        plt.show() # 这会弹出一个窗口显示图片
+        plt.show() 
 
 
 if __name__ == "__main__":
-    inspect_npy_files(CONFIG['src_root'], num_samples=CONFIG['num_samples'])
+    inspect_npy_files(
+        CONFIG['src_root'], 
+        file_pattern=CONFIG['file_pattern'], # 传入筛选模式
+        num_samples=CONFIG['num_samples']
+    )
+
+# %%
