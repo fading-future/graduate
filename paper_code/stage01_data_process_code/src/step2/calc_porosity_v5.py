@@ -21,12 +21,12 @@ warnings.filterwarnings('ignore')
 # ================= 核心配置区域 =================
 CONFIG = {
     # ---------------- 路径配置 (请修改这里) ----------------
-    "src_root": r"D:\多尺度岩心数据集\cleaned_npy_dataset",          
-    "dst_root": r"E:\aligned_Training_Data", 
+    "src_root": r"/chendou_space/data/cleaned_npy_dataset",          
+    "dst_root": r"/chendou_space/data/aligned_Training_Data", 
     "preview_dir": r"./preview_cache",  # 预览图缓存路径
     
     # ---------------- 并行配置 ----------------
-    "num_workers": 24,       # 核心数 (建议留少量余量)
+    "num_workers": 48,       # 核心数 (建议留少量余量)
     "chunk_size": 10,        # 任务分块
     
     # ---------------- 算法核心参数 (关键修改) ----------------

@@ -34,8 +34,8 @@ CONFIG = {
     'global_p99': 57256.0, 
 
     # 路径
-    'src_root': r"D:\多尺度岩心数据集",
-    'dst_root': r"D:\多尺度岩心数据集\cleaned_npy_dataset",
+    'src_root': r"/chendou_space/data/core_ctimg_data",
+    'dst_root': r"/chendou_space/data/cleaned_npy_dataset",
     
     'target_folders': [
         "6-6-20 全部",
@@ -63,7 +63,7 @@ CONFIG = {
     
     # --- 关键修改：并行参数 ---
     # 限制为 12 核，防止内存溢出 (OOM)
-    'max_workers': 12, 
+    'max_workers': 14, 
 }
 
 # ==============================================================================
