@@ -10,13 +10,19 @@ import glob
 """
 # 设置中文字体
 # 解决中文显示问题
-plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans'] # 优先使用中文字体
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+# plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans'] # 优先使用中文字体
+# plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
+# 设置中文字体为黑体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans'] 
+# 或者使用微软雅黑：['Microsoft YaHei', 'DejaVu Sans']
+# 解决负号显示问题
+plt.rcParams['axes.unicode_minus'] = False
 
 CONFIG = {
     # 可以根据需要调整这里的参数
     'num_samples': 15,  # 随机抽检的样本数量
-    'src_root': r"/chendou_space/data/cleaned_npy_dataset",  # npy文件所在目录
+    'src_root': r"D:\多尺度岩心数据集\Aligned_Training_Data_Interactive\new_data",  # npy文件所在目录
     
     # 【关键修改】在这里指定文件名模式
     'file_pattern': "6-6-20*.npy"  
