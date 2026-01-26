@@ -114,7 +114,7 @@ class VAEGANLoss(nn.Module):
             B, C, D, H, W = inputs.shape
             
             # 策略：从 D, H, W 三个方向各随机采 n 个切片
-            n_slices = 4 # 每个方向采4张，共12张，既省显存又能覆盖3D结构
+            n_slices = 2 # 每个方向采4张，共12张，既省显存又能覆盖3D结构
             
             # Z轴切片 (Depth)
             idx_d = torch.randperm(D, device=inputs.device)[:n_slices]

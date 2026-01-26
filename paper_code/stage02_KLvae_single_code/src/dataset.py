@@ -2,51 +2,68 @@ import os
 import glob
 import torch
 import numpy as np
+import random
 from torch.utils.data import Dataset
 
 class Core3DDataset(Dataset):
-    def __init__(self, data_dir, global_min, global_max):
+    def __init__(self, data_dir, global_min, global_max, patch_size=128, train=True):
         """
         Args:
-            data_dir (str): 数据文件夹路径
-            global_min (float): 也就是 calculate_global_stats.py 算出来的最小值
-            global_max (float): 也就是 calculate_global_stats.py 算出来的最大值
+            patch_size (int): 训练时的切块大小，建议 128
+            train (bool): 训练模式下开启随机切块，验证模式下可能中心裁剪
         """
         self.files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
         self.global_min = float(global_min)
         self.global_max = float(global_max)
+        self.patch_size = patch_size
+        self.train = train
         
-        # 预计算分母，避免每次 getitem 都算一次除法，稍微提速
         self.scale = self.global_max - self.global_min
-        if self.scale <= 0:
-            raise ValueError(f"❌ Invalid stats: Max ({self.global_max}) must be greater than Min ({self.global_min})")
-
-        print(f"Dataset initialized. Norm range: [{self.global_min}, {self.global_max}] -> [-1, 1]")
+        print(f"Dataset init. Norm: [{self.global_min}, {self.global_max}]. Patch Size: {patch_size}^3")
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
         file_path = self.files[idx]
-        
         try:
-            # 1. Load Data
-            # 你的原始数据是 uint16, shape (256, 256, 256)
-            data_numpy = np.load(file_path).astype(np.float32)
+            # 1. Load Data (256, 256, 256)
+            # mmap_mode='r' 对于大文件切块读取非常快，不需要加载整个文件到内存
+            data_numpy = np.load(file_path, mmap_mode='r') 
             
-            # 2. Normalize to [-1, 1] using Global Stats
-            # 公式: (x - min) / (max - min) * 2 - 1
-            data_norm = (data_numpy - self.global_min) / self.scale
+            # 2. Random Crop (关键步骤)
+            # 原始尺寸
+            D, H, W = data_numpy.shape
+            target_s = self.patch_size
+            
+            if self.train:
+                # 随机选择起始点
+                z_start = random.randint(0, D - target_s)
+                y_start = random.randint(0, H - target_s)
+                x_start = random.randint(0, W - target_s)
+            else:
+                # 中心裁剪 (Center Crop)
+                z_start = (D - target_s) // 2
+                y_start = (H - target_s) // 2
+                x_start = (W - target_s) // 2
+            
+            # 切片 (这一步因为用了 mmap，只会读取这一小块内存，速度极快)
+            crop_data = data_numpy[z_start:z_start+target_s, 
+                                   y_start:y_start+target_s, 
+                                   x_start:x_start+target_s]
+            
+            # 转为 float32 并拷贝到内存 (断开 mmap 连接)
+            crop_data = crop_data.astype(np.float32)
+
+            # 3. Normalize
+            data_norm = (crop_data - self.global_min) / self.scale
             data_norm = data_norm * 2.0 - 1.0
             
-            # 3. To Tensor & Add Channel Dimension
-            # Output Shape: (1, 256, 256, 256)
+            # 4. To Tensor (1, 128, 128, 128)
             data_tensor = torch.from_numpy(data_norm).unsqueeze(0)
             
             return data_tensor
             
         except Exception as e:
             print(f"⚠️ Error loading {file_path}: {e}")
-            # 简单的容错机制：如果读取失败，随机返回另一个样本
-            new_idx = np.random.randint(0, len(self.files))
-            return self.__getitem__(new_idx)
+            return self.__getitem__(random.randint(0, len(self.files)-1))

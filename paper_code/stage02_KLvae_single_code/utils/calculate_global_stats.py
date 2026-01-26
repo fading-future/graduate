@@ -44,7 +44,7 @@ def calculate_stats(data_dir):
 
 if __name__ == "__main__":
     # 修改这里为你的数据路径
-    DATA_DIR = "./data/train" 
+    DATA_DIR = "/chendou_space/data/aligned_Training_Data" 
     
     try:
         g_min, g_max = calculate_stats(DATA_DIR)

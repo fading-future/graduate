@@ -2,46 +2,75 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class VectorQuantizer(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25):
-        super(VectorQuantizer, self).__init__()
+class VectorQuantizerEMA(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25, decay=0.99, epsilon=1e-5):
+        super(VectorQuantizerEMA, self).__init__()
         self._embedding_dim = embedding_dim
         self._num_embeddings = num_embeddings
         self._commitment_cost = commitment_cost
-
-        self._embedding = nn.Embedding(self._num_embeddings, self._embedding_dim)
-        self._embedding.weight.data.uniform_(-1/self._num_embeddings, 1/self._num_embeddings)
+        
+        # EMA 参数
+        self.decay = decay
+        self.epsilon = epsilon
+        
+        # 初始化 Embedding (不再作为 Parameter，因为我们手动更新)
+        embedding = torch.randn(self._num_embeddings, self._embedding_dim)
+        self.register_buffer('_embedding', embedding)
+        
+        # 记录每个 Code 被选中的次数 (Cluster Size)
+        self.register_buffer('_ema_cluster_size', torch.zeros(num_embeddings))
+        # 记录每个 Code 的 EMA 权重 (Cluster Sum)
+        self.register_buffer('_ema_w', embedding.clone())
 
     def forward(self, inputs):
         # inputs: [B, C, D, H, W] -> [B, D, H, W, C]
         inputs = inputs.permute(0, 2, 3, 4, 1).contiguous()
         input_shape = inputs.shape
-        
         flat_input = inputs.view(-1, self._embedding_dim)
         
-        # 计算距离
+        # 1. 计算距离
         distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
-                    + torch.sum(self._embedding.weight**2, dim=1)
-                    - 2 * torch.matmul(flat_input, self._embedding.weight.t()))
+                    + torch.sum(self._embedding**2, dim=1)
+                    - 2 * torch.matmul(flat_input, self._embedding.t()))
             
-        #Encoding
+        # 2. Encoding (选择最近的 Code)
         encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
         encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings, device=inputs.device)
         encodings.scatter_(1, encoding_indices, 1)
         
-        # Quantize and unflatten
-        quantized = torch.matmul(encodings, self._embedding.weight).view(input_shape)
+        # 3. Quantize
+        quantized = torch.matmul(encodings, self._embedding).view(input_shape)
         
-        # Loss
+        # --- EMA 更新逻辑 (训练时执行) ---
+        if self.training:
+            # 计算当前 batch 每个 code 被选中的次数
+            encodings_sum = encodings.sum(0)
+            # 计算当前 batch 分配给每个 code 的输入向量之和
+            dw = torch.matmul(encodings.t(), flat_input)
+            
+            # EMA 更新 cluster size (加上平滑项 epsilon 防止除0)
+            self._ema_cluster_size.data.mul_(self.decay).add_(encodings_sum, alpha=1 - self.decay)
+            
+            # EMA 更新 cluster sum
+            self._ema_w.data.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+            
+            # 归一化得到新的 embedding
+            n = self._ema_cluster_size.sum()
+            cluster_size = (self._ema_cluster_size + self.epsilon) / (n + self._num_embeddings * self.epsilon) * n
+            
+            self._embedding.data.copy_(self._ema_w / cluster_size.unsqueeze(1))
+        
+        # 4. Loss
         e_latent_loss = F.mse_loss(quantized.detach(), inputs)
-        q_latent_loss = F.mse_loss(quantized, inputs.detach())
-        loss = q_latent_loss + self._commitment_cost * e_latent_loss
+        loss = self._commitment_cost * e_latent_loss
         
-        quantized = inputs + (quantized - inputs).detach() # Straight-through estimator
+        # Straight Through Estimator
+        quantized = inputs + (quantized - inputs).detach()
+        
+        # 计算 Perplexity
         avg_probs = torch.mean(encodings, dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
         
-        # convert quantized from BHWC -> BCHW
         return loss, quantized.permute(0, 4, 1, 2, 3).contiguous(), perplexity, encoding_indices
 
 class ResBlock(nn.Module):
@@ -84,7 +113,7 @@ class VQVAE3D(nn.Module):
         )
         
         # --- Vector Quantizer ---
-        self.quantizer = VectorQuantizer(num_embeddings, embedding_dim)
+        self.quantizer = VectorQuantizerEMA(num_embeddings, embedding_dim)
         
         # --- Decoder (还原 4倍: 32 -> 128) ---
         self.decoder = nn.Sequential(

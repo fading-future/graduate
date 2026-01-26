@@ -1,7 +1,4 @@
 import torch
-from utils.get_root_path import get_root_path
-
-PROJECT_ROOT = get_root_path()
 
 # 定义全局变量配置文件
 CONFIG = {
@@ -25,7 +22,7 @@ CONFIG = {
     # 注意：Windows 路径最好前面加 r，或者用双反斜杠
     # 'processed_data_dir': r"C:\\Users\\vipuser\\Desktop\\chendou\\vqvae_code\\data\\Final_Dataset_NPY_9",
     # 指向包含所有子文件夹的根目录 E:\chendou\rock_core_data
-    'processed_data_dir': r'E:\\chendou\\rock_core_data\\Final_Dataset_NPY_9',
+    'processed_data_dir': r'/chendou_space/data/aligned_Training_Data',
     
     # 输出目录
     'model_output_dir': './stage1_models',

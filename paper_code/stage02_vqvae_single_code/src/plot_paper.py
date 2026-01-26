@@ -1,10 +1,13 @@
+#%%
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
+
+#%%
 # 1. 读取数据
 # 请确保文件名和路径正确
-csv_path = r"C:\Users\vipuser\Desktop\chendou\vqvae_code\src\stage1_logs\training_log.csv"  # 你的 CSV 文件路径
+csv_path = r"/chendou_space/chendou/paper_code/stage02_vqvae_single_code/stage1_vqvae_256/stage1_logs/training_log_finetune.csv"  # 你的 CSV 文件路径
 try:
     df = pd.read_csv(csv_path)
 except FileNotFoundError:
@@ -68,8 +71,9 @@ plt.title('VQ-VAE Training Dynamics', fontsize=16, pad=15, fontweight='bold')
 plt.tight_layout()
 
 # 保存高清图
-plt.savefig('vqvae_training_log_scale.png', dpi=300, bbox_inches='tight')
-plt.savefig('vqvae_training_log_scale.pdf', bbox_inches='tight') # PDF 格式适合插入 LaTeX
+# plt.savefig('vqvae_training_log_scale.png', dpi=300, bbox_inches='tight')
+# plt.savefig('vqvae_training_log_scale.pdf', bbox_inches='tight') # PDF 格式适合插入 LaTeX
 
 print("绘图完成！图片已保存为 vqvae_training_log_scale.png")
 plt.show()
+# %%

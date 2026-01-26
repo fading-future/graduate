@@ -1,14 +1,24 @@
-# modules.py
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
+
+def get_norm(channels):
+    groups = 32
+    for g in [32, 16, 8, 4, 2, 1]:
+        if channels % g == 0:
+            groups = g
+            break
+    return nn.GroupNorm(groups, channels, eps=1e-6, affine=True)
 
 class ResBlock3D(nn.Module):
-    def __init__(self, in_ch, out_ch=None, dropout=0.0):
+    def __init__(self, in_ch, out_ch=None, dropout=0.0, use_checkpoint=False):
         super().__init__()
         out_ch = out_ch or in_ch
-        self.norm1 = nn.GroupNorm(32, in_ch, eps=1e-6, affine=True)
+        self.use_checkpoint = use_checkpoint
+        
+        self.norm1 = get_norm(in_ch)
         self.conv1 = nn.Conv3d(in_ch, out_ch, 3, padding=1)
-        self.norm2 = nn.GroupNorm(32, out_ch, eps=1e-6, affine=True)
+        self.norm2 = get_norm(out_ch)
         self.conv2 = nn.Conv3d(out_ch, out_ch, 3, padding=1)
         self.act = nn.SiLU()
         self.dropout = nn.Dropout(dropout)
@@ -18,7 +28,7 @@ class ResBlock3D(nn.Module):
         else:
             self.shortcut = nn.Identity()
 
-    def forward(self, x):
+    def forward_impl(self, x):
         h = self.norm1(x)
         h = self.act(h)
         h = self.conv1(h)
@@ -28,31 +38,40 @@ class ResBlock3D(nn.Module):
         h = self.conv2(h)
         return h + self.shortcut(x)
 
-class AttnBlock3D(nn.Module):
-    # 简单的 Self-Attention，放在 Bottleneck 处提升全局一致性
-    def __init__(self, in_channels):
+    def forward(self, x):
+        if self.use_checkpoint and self.training and x.requires_grad:
+            return checkpoint.checkpoint(self.forward_impl, x, use_reentrant=False)
+        else:
+            return self.forward_impl(x)
+
+class Downsample(nn.Module):
+    def __init__(self, in_channels, out_channels, use_checkpoint=False):
         super().__init__()
-        self.norm = nn.GroupNorm(32, in_channels, eps=1e-6, affine=True)
-        self.q = nn.Conv3d(in_channels, in_channels, 1)
-        self.k = nn.Conv3d(in_channels, in_channels, 1)
-        self.v = nn.Conv3d(in_channels, in_channels, 1)
-        self.proj_out = nn.Conv3d(in_channels, in_channels, 1)
+        self.conv = nn.Conv3d(in_channels, out_channels, 3, stride=2, padding=1)
+        self.use_checkpoint = use_checkpoint
 
     def forward(self, x):
-        h_ = x
-        h_ = self.norm(h_)
-        q = self.q(h_)
-        k = self.k(h_)
-        v = self.v(h_)
+        if self.use_checkpoint and self.training and x.requires_grad:
+            return checkpoint.checkpoint(self.conv, x, use_reentrant=False)
+        return self.conv(x)
 
-        b, c, d, h, w = q.shape
-        q = q.reshape(b, c, -1).permute(0, 2, 1) # B, N, C
-        k = k.reshape(b, c, -1)                  # B, C, N
-        w_ = torch.bmm(q, k) * (int(c)**(-0.5))
-        w_ = torch.nn.functional.softmax(w_, dim=2)
+# 【重点修改】替换了 Upsample 类
+class Upsample(nn.Module):
+    def __init__(self, in_channels, out_channels, use_checkpoint=False):
+        super().__init__()
+        # 使用 ConvTranspose3d 替代 "插值+卷积"。
+        # Kernel=4, Stride=2, Padding=1 是最经典的上采样配置，无棋盘效应。
+        self.conv = nn.ConvTranspose3d(in_channels, out_channels, 4, stride=2, padding=1)
+        self.use_checkpoint = use_checkpoint
 
-        v = v.reshape(b, c, -1).permute(0, 2, 1) # B, N, C
-        h_ = torch.bmm(w_, v)                    # B, N, C
-        h_ = h_.permute(0, 2, 1).reshape(b, c, d, h, w)
+    def forward(self, x):
+        # 依然保留 Checkpoint 机制作为双重保险
+        if self.use_checkpoint and self.training and x.requires_grad:
+            return checkpoint.checkpoint(self.conv, x, use_reentrant=False)
+        return self.conv(x)
 
-        return x + self.proj_out(h_)
+class AttnBlock3D(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+    def forward(self, x):
+        return x

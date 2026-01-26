@@ -163,7 +163,7 @@ def train_vqvae():
         print(f"Epoch {epoch+1} Done.")
         
         # 保存模型
-        if (epoch+1) % 5 == 0:
+        if (epoch+1) % 2 == 0:
             torch.save(model.state_dict(), os.path.join(save_dir, f"vqvae_epoch_{epoch+1}.pth"))
             save_visualization(img, img_recon, epoch+1, log_dir)
             
