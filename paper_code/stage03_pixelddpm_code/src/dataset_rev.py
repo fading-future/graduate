@@ -16,7 +16,7 @@ class MaskedREVDataset(Dataset):
 
         # 2. 隨機挑選 n 個文件
         # 注意：如果文件總數小於 n，sample 會報錯，建議加個長度判斷
-        sample_size = min(len(self.file_list), 1000)
+        sample_size = min(len(self.file_list), 2000)
         self.file_list = random.sample(self.file_list, sample_size)
         
         if limit_size is not None and len(self.file_list) > limit_size:

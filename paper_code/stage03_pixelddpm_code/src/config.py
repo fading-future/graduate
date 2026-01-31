@@ -10,7 +10,7 @@ CONFIG = {
     "note": "使用岩心数据集训练",
 
     # 训练参数
-    'batch_size': 1,       # 批次大小 
+    'batch_size': 4,       # 批次大小 
     'num_workers': 8,      # 数据加载子进程数
     'accumulation_steps': 8,  # 梯度累积步数
     'epochs': 200,          # 训练轮数
@@ -26,12 +26,12 @@ CONFIG = {
     'n_resample': 5,           # 每个时间步的重采样次数
 
     # 输出与日志参数（相对于项目根目录graduation-thesis-code 的）
-    'save_model_every': 2,  # 每多少轮保存一次模型
+    'save_model_every': 1,  # 每多少轮保存一次模型
     'num_samples_to_generate': 20,  # 推理时生成样本数量
     
     # 文件路径相关
     'raw_data_dir': f'{PROJECT_ROOT}/data/raw',  # 原始数据集目录
-    'processed_data_dir': r'E:\aligned_Training_Data',  # 处理后数据集目录
+    'processed_data_dir': r'/chendou_space/data/aligned_Training_Data',  # 处理后数据集目录
     'model_output_dir': './models',  # 模型参数保存目录
     'model_checkpoint_path': f'{PROJECT_ROOT}/exp_results/exp_05/models',  # 预训练模型路径，None表示不使用预训练模型
     'log_output_dir': './logs',  # 日志保存目录

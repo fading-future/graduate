@@ -1,16 +1,13 @@
 import torch
-from utils.get_root_path import get_root_path
-
-PROJECT_ROOT = get_root_path()
 
 CONFIG = {
-    "experiment_name": "exp_final_stage2_graduation",
+    "experiment_name": "exp2_final_stage2_graduation",
     "note": "Stage 2: Latent Diffusion based on KL-VAE (4 channels). Task: 3D Inpainting with Porosity Condition.",
 
     # --- 核心训练参数 ---
     # 32^3 的 Latent 非常小，A100 上 Batch Size 可以开到起飞
     'batch_size': 64,      # 建议 64 或 128，跑得飞快
-    'num_workers': 8,
+    'num_workers': 18,
     'pin_memory': True,
     'accumulation_steps': 1,
     'epochs': 300,         # LDM 收敛快，但多跑跑没坏处
@@ -25,15 +22,16 @@ CONFIG = {
     'out_channels': 4,       # 预测 4 通道的噪声
     'base_channels': 128,    # 保持 128 宽度，容量足够
     'channel_mults': (1, 2, 4), # 32 -> 16 -> 8
+    'use_attention': (False, True, True),
     'timesteps': 1000,
     
     # 【必须修改】运行 prepare_data.py 后得到的 scale_factor
-    'scale_factor': 5.55,  # 举例，请填入你实际算出来的值 (1/std)
+    'scale_factor': 1.009,  # 举例，请填入你实际算出来的值 (1/std)
     'safe_threshold': 10.0, # 放宽一点阈值，避免误杀有效数据
 
     # --- 训练策略 ---
-    'pred_x0_reg_weight': 0.1,    # 保留这个，对稳定性很有帮助
-    'large_known_top_prob': 0.0,  # 既然是做切一半补一半，这个策略可以先关掉或设小一点
+    'pred_x0_reg_weight': 0.0,    # 保留这个，对稳定性很有帮助
+    'large_known_top_prob': 0.2,  # 既然是做切一半补一半，这个策略可以先关掉或设小一点
 
     # --- 路径 ---
     # 指向你刚才用 prepare_data.py 生成的那些 porosity_xxx.npy 的文件夹
@@ -41,7 +39,6 @@ CONFIG = {
     'model_output_dir': './models',
     'log_output_dir': './logs',
     'inference_output_dir': './inference_outputs',
-    
-    # 这一行可以注释掉，Stage 2 训练不需要加载 Stage 1 的权重，只需要数据
-    # 'stage1_model_path': ... 
+
+    'stage1_model_path': "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/experiments/exp01_cube_structure_v1/checkpoint_epoch_26.pt",
 }

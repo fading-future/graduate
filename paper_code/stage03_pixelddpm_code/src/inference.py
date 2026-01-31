@@ -254,12 +254,12 @@ def setup_experiment(PROJECT_ROOT: Path, config: dict) -> Path:
     # 3. 模型保存目录：实验文件夹/models
     # model_dir = PROJECT_ROOT / config["model_output_dir"]
     # model_dir.mkdir(exist_ok=True)
-    model_dir = Path(r"C:\Users\Administrator\Desktop\code\graduation_thesis_code\exp_results\exp_05\models")
+    model_dir = Path(r"/chendou_space/chendou/paper_code/stage03_pixelddpm_code/exp_results/exp_01/models")
 
     # 4. 推理结果的保存目录：实验文件夹/img_output_dir
     # img_output_dir = exp_dir / config["inference_output_dir"]
     # img_output_dir.mkdir(exist_ok=True)
-    img_output_dir = Path(r"C:\Users\Administrator\Desktop\code\graduation_thesis_code\exp_results\exp_05\logs") / config["inference_output_dir"]
+    img_output_dir = Path(r"/chendou_space/chendou/paper_code/stage03_pixelddpm_code/exp_results/exp_01/logs") / config["inference_output_dir"]
     
     return results_root, exp_dir, model_dir, img_output_dir
 
@@ -364,12 +364,12 @@ def main(model_path, sampling_method, condition_size, inference_save_dir, npy_sa
 
         # ... 在 plt.show() 之前 ...
         # 保存 3D 体积数据供 analyze_quality.py 读取
-        save_dir = Path(r"C:\Users\Administrator\Desktop\graduation_thesis_code\exp_results\exp_04\logs\analysis_samples") / npy_save_dir
-        time_stamp = time.time()
-        os.makedirs(save_dir, exist_ok=True)
-        np.save(os.path.join(save_dir, f"sample_{time_stamp}_gt.npy"), gt_volume)
-        np.save(os.path.join(save_dir, f"sample_{time_stamp}_gen.npy"), gen_volume)
-        print(f"Volume data saved to {save_dir}/")
+        # save_dir = Path(r"C:\Users\Administrator\Desktop\graduation_thesis_code\exp_results\exp_04\logs\analysis_samples") / npy_save_dir
+        # time_stamp = time.time()
+        # os.makedirs(save_dir, exist_ok=True)
+        # np.save(os.path.join(save_dir, f"sample_{time_stamp}_gt.npy"), gt_volume)
+        # np.save(os.path.join(save_dir, f"sample_{time_stamp}_gen.npy"), gen_volume)
+        # print(f"Volume data saved to {save_dir}/")
 
         # 可视化并保存
         visualization_dir = img_output_dir / inference_save_dir
@@ -378,27 +378,28 @@ def main(model_path, sampling_method, condition_size, inference_save_dir, npy_sa
         visualize_three_planes(gt_volume, input_cond_volume, gen_volume, split_point, save_path, os.path.basename(file_path))
 
         # 保存 GT
-        gt_nii = nib.Nifti1Image(gt_volume, np.eye(4))
-        nib.save(gt_nii, os.path.join(visualization_dir, f"sample_{i+1}_gt.nii.gz"))
+        # gt_nii = nib.Nifti1Image(gt_volume, np.eye(4))
+        # nib.save(gt_nii, os.path.join(visualization_dir, f"sample_{i+1}_gt.nii.gz"))
 
         # 保存 Generated
-        gen_nii = nib.Nifti1Image(gen_volume, np.eye(4))
-        nib.save(gen_nii, os.path.join(visualization_dir, f"sample_{i+1}_gen.nii.gz"))
+        # gen_nii = nib.Nifti1Image(gen_volume, np.eye(4))
+        # nib.save(gen_nii, os.path.join(visualization_dir, f"sample_{i+1}_gen.nii.gz"))
     print("\nAll generations complete.")
 
 if __name__ == "__main__":
     
     # 使用模型参数a，选取不同的采样策略b，设置不同的已经条件大小c，推理采样d 个数据，保存到指定目录
     # a: model_dir/unet_epoch_{epoch_id}.pth
-    for epoch_id in reversed(range(2, 5, 1)):
+    for epoch_id in reversed(range(35, 82, 1)):
         model_path = os.path.join(model_dir, f"unet_epoch_{epoch_id}.pth")
 
         # b: simple_sample / repaint_sample / ddim_sample
-        for sampling_method in ['ddim_sample', 'simple_sample', 'repaint_sample']:
+        # for sampling_method in ['ddim_sample', 'simple_sample', 'repaint_sample']:
+        for sampling_method in ['ddim_sample', 'simple_sample']:
             # c: mask定义部分
-            for condition_size in [32, 48, 64]:
+            for condition_size in [64]:
                 # d: CONFIG['num_samples_to_generate']
-                CONFIG['num_samples_to_generate'] = 5
+                CONFIG['num_samples_to_generate'] = 1
                 print(f"\n=== Inference with Model Epoch {epoch_id}, Method: {sampling_method}, Condition Size: {condition_size} ===")
                 inference_save_dir = f"inference_outputs_epoch{epoch_id}_{sampling_method}_cond{condition_size}"
                 npy_save_dir = f"npy_outputs_epoch{epoch_id}_{sampling_method}_cond{condition_size}"

@@ -140,7 +140,7 @@ class ConditionalLatentUNet(nn.Module):
         out_channels=64, 
         base_channels=128, # A100 推荐 128
         channel_mults=(1, 2, 4), # 通道倍率: 128 -> 256 -> 512
-        use_attention=(False, False, True) # 仅在最底层使用 Attention
+        use_attention=(False, True, True) # 仅在最底层使用 Attention
     ):
         super().__init__()
         

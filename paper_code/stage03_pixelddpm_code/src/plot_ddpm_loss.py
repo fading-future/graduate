@@ -8,7 +8,7 @@ import os
 #%%
 # ================= 配置区域 =================
 # 请将此处修改为你实际的 CSV 文件路径
-LOG_FILE = r"C:\Users\Administrator\Desktop\code\graduation_thesis_code\exp_results\exp_05\logs\training_log.csv"
+LOG_FILE = r"/chendou_space/chendou/paper_code/stage03_pixelddpm_code/exp_results/exp_01/logs/training_log.csv"
 # ===========================================
 
 def plot_training_curves(log_path):
@@ -39,7 +39,7 @@ def plot_training_curves(log_path):
     # 3. 数据平滑处理
     # Window size 可以根据你的总 Step 数调整。
     # 如果数据量很大（例如几万行），建议设为 100-500 以获得平滑的趋势线
-    window_size = 250
+    window_size = 200
     df['Loss_Smooth'] = df['Current_Loss'].rolling(window=window_size, min_periods=1).mean()
     
     steps = df['Global_Step']
@@ -51,7 +51,7 @@ def plot_training_curves(log_path):
     ax1.set_ylabel('MSE Loss (Log Scale)', color=color_loss, fontsize=16, fontweight='bold')
     
     # 绘制原始数据背景 (透明度 Alpha 低，作为背景噪音显示)
-    ax1.plot(steps, df['Current_Loss'], color=color_loss, alpha=0.15, linewidth=0.5, label='Raw Loss')
+    ax1.plot(steps, df['Current_Loss'], color=color_loss, alpha=0.45, linewidth=0.5, label='Raw Loss')
     
     # 绘制平滑曲线 (深色，作为主要趋势)
     lns1 = ax1.plot(steps, df['Loss_Smooth'], color=color_loss, linewidth=2.5, label=f'Smoothed Loss (MA={window_size})')
@@ -100,4 +100,4 @@ def plot_training_curves(log_path):
 
 if __name__ == "__main__":
     plot_training_curves(LOG_FILE)
-# %%
+#%%

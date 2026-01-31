@@ -16,9 +16,9 @@ import random
 import csv
 import numpy as np
 import torch
-from config import CONFIG
-from utils.get_root_path import get_root_path
-import inference as infer_mod  # reuse functions: load_models, ddim_sample, visualize_inference_results, etc.
+from src.config import CONFIG
+from utils.get_root_path import get_project_root
+import src.inference as infer_mod  # reuse functions: load_models, ddim_sample, visualize_inference_results, etc.
 
 def compute_stats(recon_gt, recon_gen, mask_pixel_np):
     # recon_* are numpy arrays (D,H,W)
@@ -46,7 +46,7 @@ def compute_stats(recon_gt, recon_gen, mask_pixel_np):
 
 def main():
     device = CONFIG['device']
-    root = get_root_path()
+    root = get_project_root()
     models_dir = os.path.join(root, "exp_results", CONFIG['experiment_name'], "models")
     model_files = sorted(glob.glob(os.path.join(models_dir, "unet_epoch_*.pth")), key=os.path.getmtime)
     if not model_files:

@@ -7,7 +7,7 @@ import random
 
 class CubeDataset(Dataset):
     def __init__(self, data_root, ext=".npy", crop_size=128, is_train=True):
-        self.files = sorted(glob.glob(os.path.join(data_root, f"*{ext}")))
+        self.files = sorted(glob.glob(os.path.join(data_root, f"*{ext}")))[0:2000]  # --- 限制最多2000个样本 ---
         self.crop_size = crop_size
         self.is_train = is_train
         print(f"Dataset: {len(self.files)} files. Crop size: {crop_size}")

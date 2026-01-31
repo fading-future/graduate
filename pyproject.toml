@@ -9,6 +9,7 @@ dependencies = [
     "ipykernel>=7.1.0",
     "lpips>=0.1.4",
     "matplotlib>=3.10.8",
+    "nibabel>=5.3.3",
     "opencv-python>=4.13.0.90",
     "pandas>=2.3.3",
     "pywavelets>=1.8.0",
