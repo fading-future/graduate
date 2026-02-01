@@ -102,7 +102,7 @@ def main():
         in_channels=CONFIG['in_channels'],
         out_channels=CONFIG['out_channels'],
         base_channels=CONFIG['base_channels'],
-        channel_mults=(1, 2, 4),
+        channel_mults=CONFIG['channel_mults'],
         use_attention=CONFIG['use_attention']
     ).to(CONFIG['device'])
 
@@ -113,37 +113,6 @@ def main():
     criterion = nn.L1Loss()
     diffusion = DiffusionTrainer(model, CONFIG)
     scaler = GradScaler('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # # ================= 🛡️ 自动断点重训 & CSV 对齐逻辑 (修改版) =================
-    # start_epoch = 0
-    
-    # # 1. 自动寻找最新的 checkpoint (不再硬编码 epoch_17)
-    # # 逻辑：列出所有 unet_epoch_*.pth，按数字排序，取最大的
-    # import re
-    # checkpoints = [f for f in os.listdir(model_dir) if f.startswith("unet_epoch_") and f.endswith(".pth")]
-    # if len(checkpoints) > 0:
-    #     # 提取数字并排序: unet_epoch_17.pth -> 17
-    #     checkpoints.sort(key=lambda x: int(re.findall(r'\d+', x)[0]))
-    #     latest_ckpt = checkpoints[-1]
-    #     checkpoint_path = os.path.join(model_dir, latest_ckpt)
-        
-    #     print(f"🔄 Found latest checkpoint: {checkpoint_path}, loading...")
-    #     checkpoint = torch.load(checkpoint_path, map_location=CONFIG['device'])
-        
-    #     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-    #         model.load_state_dict(checkpoint['model_state_dict'])
-    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #         if 'ema_state_dict' in checkpoint:
-    #             ema.load_state_dict(checkpoint['ema_state_dict'])
-    #             print("✅ EMA weights loaded.")
-    #         else:
-    #             ema = EMA(model, decay=0.9999).to(CONFIG['device'])
-    #         if 'scheduler_state_dict' in checkpoint:
-    #              scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            
-    #         # 读取 Checkpoint 里的 epoch
-    #         start_epoch = checkpoint['epoch']
-    #         print(f"✅ Loaded Dict: Resuming from Epoch {start_epoch} (Next is {start_epoch+1})")
 
     # ================= 🛡️ 自动断点重训 & CSV 对齐逻辑 & 忽略之前的学习率加载=================
     start_epoch = 0
@@ -164,9 +133,6 @@ def main():
             
             # --- 🔴 关键修改 1: 加载 Optimizer 但强制重置 LR ---
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            # for param_group in optimizer.param_groups:
-            #     param_group['lr'] = CONFIG['lr'] # 强行改回 1e-4
-            # print(f"🔥 Force reset Learning Rate to {CONFIG['lr']} (Ignored checkpoint LR)")
             
             if 'ema_state_dict' in checkpoint:
                 ema.load_state_dict(checkpoint['ema_state_dict'])
@@ -201,8 +167,6 @@ def main():
                 last_step_csv = int(df.iloc[-1]['Step'])
                 last_epoch_csv = int(df.iloc[-1]['Epoch'])
                 
-                # 只有当 CSV 记录的 Epoch 和 Checkpoint 的 Epoch 一致时，才信任 CSV 的 Step
-                # 防止 CSV 是旧的，而模型是新的（或反之）
                 if last_epoch_csv == start_epoch:
                     print(f"📍 Aligned global_step from CSV: {last_step_csv}")
                     global_step = last_step_csv
@@ -234,7 +198,23 @@ def main():
                 x_noisy, noise = diffusion.add_noise(x_0, t)
                 model_input = torch.cat([x_noisy, condition, mask], dim=1)
                 noise_pred = model(model_input, t, porosity)
-                loss_mse = criterion(noise_pred, noise)
+
+                # ---- optional: min-SNR weighting ----
+                use_min_snr = CONFIG.get('use_min_snr', False)
+                gamma = float(CONFIG.get('min_snr_gamma', 5.0))
+
+                if CONFIG.get('loss_type', 'l1').lower() == 'mse':
+                    raw = (noise_pred - noise) ** 2
+                else:
+                    raw = torch.abs(noise_pred - noise)
+
+                if use_min_snr:
+                    alpha_bar_t = diffusion.alphas_cumprod[t].view(-1, 1, 1, 1, 1)
+                    snr = alpha_bar_t / (1.0 - alpha_bar_t)
+                    w = torch.minimum(snr, torch.tensor(gamma, device=snr.device)) / snr
+                    loss_mse = (raw * w).mean()
+                else:
+                    loss_mse = raw.mean()
 
                 # ---------------- [Fix] pred_x0 soft-clamp penalty ----------------
                 alpha_bar_t = diffusion.alphas_cumprod[t].view(-1, 1, 1, 1, 1)
@@ -253,10 +233,6 @@ def main():
                 penalty_raw = ((pred_x0 - pred_x0_clamped) ** 2)
 
                 # 3. 【核心修复】SNR 加权 / 时间步加权
-                # 当 t 很大时(全噪声)，sqrt_alpha_bar 接近0，pred_x0 计算极不稳定。
-                # 我们乘以 sqrt_alpha_bar (或 alpha_bar) 来抵消分母的影响。
-                # 这样在 t=1000 时，权重接近0，模型不会因为数学误差被惩罚。
-                # 形状: (B, 1, 1, 1, 1)
                 reg_weighting = alpha_bar_t  # 或者用 sqrt_alpha_bar，这里用 alpha_bar 更保守
                 
                 # 加权后的 Penalty (对 Batch 求平均)
@@ -266,7 +242,6 @@ def main():
                 reg_w = CONFIG.get('pred_x0_reg_weight', 0.1) # 权重建议 0.1
                 
                 # 5. 【最后一道防线】防止极端情况下的 NaN 或 Infinity
-                # 如果 penalty 依然过大（虽然加权后不太可能），将其截断
                 if torch.isnan(pred_x0_penalty) or torch.isinf(pred_x0_penalty):
                      pred_x0_penalty = torch.tensor(0.0, device=CONFIG['device'])
                 

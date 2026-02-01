@@ -85,26 +85,41 @@ class Decoder(nn.Module):
         return self.final_block(x)
 
 class DiagonalGaussianDistribution(object):
-    def __init__(self, parameters, deterministic=False):
+    def __init__(self, parameters, deterministic=False, logvar_max=5.0, logvar_min=-30.0):
+        """
+        parameters: tensor (B, 2*z_ch, D, H, W) -> chunk into mean, logvar
+        logvar_max: upper clamp for logvar (exp(5) ~ 148 -> 合理范围)
+        """
         self.parameters = parameters
-        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
-        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+        self.mean, raw_logvar = torch.chunk(parameters, 2, dim=1)
+
+        # clamp logvar to safe numerical range BEFORE exp
+        # 原来是 clamp(..., -30, 20) 会导致 exp(20) ~ 4.8e8 -> KL 爆炸
+        self.logvar = torch.clamp(raw_logvar, min=logvar_min, max=logvar_max)
+
         self.deterministic = deterministic
-        self.std = torch.exp(0.5 * self.logvar)
+
+        # compute var/std AFTER clamping -> 避免 exp 导致溢出
         self.var = torch.exp(self.logvar)
+        self.std = torch.sqrt(self.var)
 
     def sample(self):
         if self.deterministic:
             return self.mean
-        x = self.mean + self.std * torch.randn_like(self.mean).to(device=self.parameters.device)
-        return x
+        # torch.randn_like already on same device & dtype
+        return self.mean + self.std * torch.randn_like(self.mean)
 
     def kl(self, other=None):
+        # return per-sample KL (shape: [B])
         if self.deterministic:
-            return torch.Tensor([0.])
-        else:
-            return 0.5 * torch.sum(torch.pow(self.mean, 2) + self.var - 1.0 - self.logvar, dim=[1, 2, 3, 4])
-
+            # 返回与 mean 在同 device/dtype 且按 batch 尺寸的零向量
+            return torch.zeros(self.mean.shape[0], device=self.mean.device, dtype=self.mean.dtype)
+        # 数值稳定的 KL 计算（使用 clamp 后的 logvar/var）
+        # KL = 0.5 * sum( mu^2 + var - 1 - logvar )
+        # sum over spatial+channel dims, keep batch dim
+        return 0.5 * torch.sum(self.mean * self.mean + self.var - 1.0 - self.logvar, dim=[1, 2, 3, 4])
+    
+    
 class KLVAE3D(nn.Module):
     def __init__(self, config):
         super().__init__()

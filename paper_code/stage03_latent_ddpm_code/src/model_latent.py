@@ -7,7 +7,6 @@ from torch.utils.checkpoint import checkpoint
 # ==========================================
 # 1. 基础组件 (Embedding & Helpers)
 # ==========================================
-
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -40,7 +39,6 @@ class PorosityEmbedder(nn.Module):
 # ==========================================
 # 2. 核心模块: ResBlock3D
 # ==========================================
-
 class ResBlock3D(nn.Module):
     """
     标准的 ResNet Block，支持 Time/Condition 注入
@@ -90,7 +88,6 @@ class ResBlock3D(nn.Module):
 # ==========================================
 # 3. 核心模块: Attention3D (关键升级)
 # ==========================================
-
 class Attention3D(nn.Module):
     def __init__(self, dim, heads=4, dim_head=64):
         super().__init__()
@@ -132,7 +129,6 @@ class Attention3D(nn.Module):
 # ==========================================
 # 4. 主模型: High-Fidelity 3D UNet
 # ==========================================
-
 class ConditionalLatentUNet(nn.Module):
     def __init__(
         self, 

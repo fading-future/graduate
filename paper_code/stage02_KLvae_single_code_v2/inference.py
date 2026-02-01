@@ -10,18 +10,18 @@ from torch.utils.data import DataLoader, Dataset
 from models.vae import KLVAE3D
 
 # ================= 配置区域 =================
-CONFIG_PATH = "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config copy.yaml"
+CONFIG_PATH = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\config\train_config.yaml"
 # 请确保这里替换成你最新的 checkpoint
-CHECKPOINT_PATH = "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/experiments/exp01_cube_structure_v1/checkpoint_epoch_26.pt" 
+CHECKPOINT_PATH = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp03_cube_structure_v1\ckpt_epoch_36.pt" 
 # CSV 文件路径
-CSV_PATH = "/chendou_space/data/aligned_Training_Data/processing_report.csv"
+CSV_PATH = r"E:\aligned_Training_Data\processing_report.csv"
 # 输出路径 (建议改个名，区分 crop 版和 full 版)
-SAVE_DIR = "/chendou_space/data/stage2_latents_full_256" 
+SAVE_DIR = r"E:\stage2_latents_full_256" 
 
 # 显卡设置
 DEVICE = "cuda"
 # A100 80G 处理 256^3 的数据，Batch Size 建议设为 1 或 2，大了容易 OOM
-BATCH_SIZE = 8 
+BATCH_SIZE = 1 
 
 # ================= 1. 修改后的 Dataset (不裁剪) =================
 class InferenceDataset(Dataset):
@@ -63,7 +63,7 @@ def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
     
     # 1. 加载配置
-    with open(CONFIG_PATH, 'r') as f:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
 
     # 2. 加载 CSV 映射表
@@ -105,7 +105,7 @@ def main():
                 
                 # VAE 编码 -> [B, 4, 32, 32, 32]
                 posterior = vae.encode(batch_data)
-                z = posterior.sample() 
+                z = posterior.mean   # 或 posterior.mean 
                 
                 z_np = z.cpu().float().numpy()
                 

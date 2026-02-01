@@ -7,7 +7,7 @@ import numpy as np
 #%%
 # 1. 读取数据
 # 请确保文件名和路径正确
-csv_path = r"/chendou_space/chendou/paper_code/stage02_vqvae_single_code/stage1_vqvae_256/stage1_logs/training_log_finetune.csv"  # 你的 CSV 文件路径
+csv_path = r"E:\chendou\paper_code\stage02_vqvae_single_code\stage1_vqvae_256\stage1_logs\fixed_training_log.csv"  # 你的 CSV 文件路径
 try:
     df = pd.read_csv(csv_path)
 except FileNotFoundError:
