@@ -5,18 +5,26 @@ import torch
 # ==========================================================
 PATHS = {
     # 原始 256^3 数据
-    "raw_data_dir": r"E:\\aligned_Training_Data",
+    # "raw_data_dir": r"E:\\aligned_Training_Data",
+    "raw_data_dir": "/chendou_space/data/aligned_Training_Data", # Linux 路径
+
     # 仅用于解析 porosity（按文件名匹配 porosity_*.npy）
-    "latent_dir": r"E:\\stage2_latents_full_256",
+    # "latent_dir": r"E:\\stage2_latents_full_256",
+    "latent_dir": "/chendou_space/data/stage2_latents_full_256", # Linux 路径
+
     # 孔隙率 CSV（以 file 列匹配原始文件名）
-    "porosity_csv": r"E:\\aligned_Training_Data\\processing_report.csv",
+    # "porosity_csv": r"E:\\aligned_Training_Data\\processing_report.csv",
+    "porosity_csv": "/chendou_space/data/aligned_Training_Data/processing_report.csv", # Linux 路径
 
     # Stage1 KLVAE
-    "vae_config_path": r"E:\\chendou\\paper_code\\stage02_KLvae_single_code_v2\\config\\train_config.yaml",
-    "vae_ckpt_path": r"E:\\chendou\\paper_code\\stage02_KLvae_single_code_v2\\experiments\\exp03_cube_structure_v1\\ckpt_epoch_36.pt",
+    # "vae_config_path": r"E:\\chendou\\paper_code\\stage02_KLvae_single_code_v2\\config\\train_config.yaml",
+    # "vae_ckpt_path": r"E:\\chendou\\paper_code\\stage02_KLvae_single_code_v2\\experiments\\exp03_cube_structure_v1\\ckpt_epoch_36.pt",
+    "vae_config_path": "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config.yaml", # Linux 路径
+    "vae_ckpt_path": "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/experiments/exp03_cube_structure_v1/ckpt_epoch_36.pt", # Linux 路径
 
     # 预处理输出（z_full / z_cond / mask / porosity）
-    "paired_data_dir": r"E:\\stage2_latents_inpaint_pairs",
+    # "paired_data_dir": r"E:\\stage2_latents_inpaint_pairs",
+    "paired_data_dir": "/chendou_space/data/stage2_latents_inpaint_pairs", # Linux 路径
 }
 
 # ==========================================================
@@ -82,8 +90,8 @@ LOSS = {
 # Latent 归一化与安全阈值
 # ==========================================================
 NORMALIZE = {
-    "scale_factor": None,  # 预处理脚本会统计并写入 stats.json；这里可手动覆写
-    "safe_threshold": 8.0,
+    "scale_factor": 1.2375,  # 预处理脚本会统计并写入 stats.json；这里可手动覆写
+    "safe_threshold": 12.0,
 }
 
 # ==========================================================
