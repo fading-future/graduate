@@ -21,9 +21,9 @@ from utils.get_root_path import get_project_root
 
 # ================= 配置区域 =================
 # 【请务必修改这里】Stage 1 KL-VAE 的配置文件路径
-VAE_CONFIG_PATH = r"/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config.yaml" 
-# FIXED_SAMPLE = "/chendou_space/data/stage2_latents_full_256/porosity_0.160917_6-6-20 全部_z4032_y506_x585.npy"
-FIXED_SAMPLE = None
+VAE_CONFIG_PATH = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\config\train_config.yaml" 
+FIXED_SAMPLE = r"E:\\stage2_latents_full_256\\porosity_0.001061_6-6-20 全部_z3776_y617_x430.npy"
+# FIXED_SAMPLE = None  # 若为 None，则随机选取测试样本
 SAFE_LIMIT = CONFIG['safe_threshold'] 
 # 0) Sanity 开关：None / "all1" / "all0"
 # SANITY = "all1"
@@ -80,7 +80,7 @@ def load_models(model_path, device):
     if not os.path.exists(VAE_CONFIG_PATH):
         raise FileNotFoundError(f"❌ VAE Config not found: {VAE_CONFIG_PATH}")
         
-    with open(VAE_CONFIG_PATH, 'r') as f:
+    with open(VAE_CONFIG_PATH, 'r', encoding='utf-8') as f:
         vae_config = yaml.safe_load(f)
     
     # 初始化模型
