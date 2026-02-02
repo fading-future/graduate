@@ -27,6 +27,8 @@ class LatentDataset(Dataset):
             
         if len(self.file_list) == 0:
             raise ValueError("No .npy files found! Check config paths.")
+        
+        # self.file_list = self.file_list[:3200]
         print(f"Total LatentDataset size: {len(self.file_list)} files.")
 
     def __len__(self):
@@ -60,15 +62,17 @@ class LatentDataset(Dataset):
         # ---- 模式选择权重（只影响训练分布，不影响其它逻辑）----
         mode = random.choices(
             ['half', 'two_halves', 'corner_missing', 'random_box'],
-            weights=[35, 25, 20, 20],
+            weights=[80, 10, 5, 5],
             k=1
         )[0]
 
         # ========== A) 已知一半 -> 推理另一半 ==========
         if mode == 'half':
             # 让切分位置在 45%~55% 附近波动，避免固定一刀切
-            axis = random.choice(['D', 'H', 'W'])
-            side = random.choice(['low', 'high'])
+            # axis = random.choice(['D', 'H', 'W'])
+            axis = 'D'  # 强制 Z 轴切分，符合实际任务
+            # side = random.choice(['low', 'high'])
+            side = random.choice(['low'])
 
             if axis == 'D':
                 cut = random.randint(int(D * 0.45), int(D * 0.55))

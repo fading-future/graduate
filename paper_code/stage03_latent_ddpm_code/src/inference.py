@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import matplotlib
 matplotlib.use('Agg') # 关键：禁用 GUI 后端
@@ -20,13 +21,19 @@ from utils.get_root_path import get_project_root
 
 # ================= 配置区域 =================
 # 【请务必修改这里】Stage 1 KL-VAE 的配置文件路径
-VAE_CONFIG_PATH = r"/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config copy.yaml" 
+VAE_CONFIG_PATH = r"/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config.yaml" 
+# FIXED_SAMPLE = "/chendou_space/data/stage2_latents_full_256/porosity_0.160917_6-6-20 全部_z4032_y506_x585.npy"
+FIXED_SAMPLE = None
+SAFE_LIMIT = CONFIG['safe_threshold'] 
+# 0) Sanity 开关：None / "all1" / "all0"
+# SANITY = "all1"
+SANITY = None
+# 0) 是否启用直方图匹配（默认关：先看结构）
+FORCE_DISABLE_HIST_MATCH = False
 # ===========================================
 
-# ==========================================
-# 1. 辅助与可视化模块 (Visualization)
-# ==========================================
 
+# 1. 辅助与可视化模块 (Visualization)
 def get_cosine_schedule(timesteps, s=0.008):
     steps = timesteps + 1
     x = torch.linspace(0, timesteps, steps)
@@ -158,57 +165,88 @@ def visualize_inference_results(gt_vol, input_cond_vol, gen_vol, mask_pixel_np, 
     plt.close()
     print(f"  🖼️ Saved visualization: {save_path}")
 
-# ==========================================
-# 2. 核心采样策略 (DDIM & RePaint)
-# ==========================================
+import torch
+from tqdm import tqdm
 
-SAFE_LIMIT = CONFIG['safe_threshold'] 
+def ddim_sample(model, condition, mask, porosity, device, ddim_steps=50, seed: int | None = 1234):
+    """
+    DDIM sampling for conditional inpainting in latent space.
+    condition: (B, C, D, H, W)  -> known-region latent (GT * mask)
+    mask:      (B, 1, D, H, W)  -> 1=known, 0=unknown
+    porosity:  (B, 1) or (B,)   -> conditioning scalar
+    seed:      int or None      -> make sampling deterministic for fair comparison
+    """
+    model.eval()
 
-def ddim_sample(model, condition, mask, porosity, device, ddim_steps=50):
-    """
-    DDIM 采样，保持通用逻辑
-    """
+    # steps
     ddim_steps = ddim_steps if ddim_steps is not None else CONFIG.get('ddim_steps_infer', 200)
-    print(f"  🚀 Strategy: Optimized DDIM Sampling ({ddim_steps} steps)...")
-    
-    total_timesteps = CONFIG['timesteps']
-    betas = get_cosine_schedule(total_timesteps).to(device)
-    alphas = 1.0 - betas
-    alphas_cumprod = torch.cumprod(alphas, dim=0)
+    total_timesteps = int(CONFIG['timesteps'])
+    SAFE_LIMIT = float(CONFIG.get('safe_threshold', 6.0))
+
+    print(f"  🚀 Strategy: DDIM Sampling ({ddim_steps} steps), total T={total_timesteps}, seed={seed}")
+
+    # --- schedule (must match training) ---
+    betas = get_cosine_schedule(total_timesteps).to(device)          # (T,)
+    alphas = 1.0 - betas                                             # (T,)
+    alphas_cumprod = torch.cumprod(alphas, dim=0)                    # (T,)
+
+    # --- timesteps for DDIM ---
     times = torch.linspace(0, total_timesteps - 1, steps=ddim_steps, device=device)
     times = torch.unique(torch.round(times).long(), sorted=True)
-    times = list(reversed(times.tolist()))
-    
-    # [关键] 这里的 latent_channels 要和 KLVAE 压缩后的通道数一致
-    x = torch.randn_like(condition)  # (1, 4, D, H, W) 由数据决定
+    times = list(reversed(times.tolist()))  # e.g. [999, ..., 0]
 
-    fixed_noise = torch.randn_like(condition)  # 固定一次
+    B = condition.shape[0]
+
+    # =======================
+    # Deterministic noises
+    # =======================
+    # Use a per-call generator so this doesn't affect global randomness elsewhere
+    if seed is not None:
+        g = torch.Generator(device=device)
+        g.manual_seed(int(seed))
+        x = torch.randn(condition.shape, device=device, dtype=condition.dtype, generator=g)
+        fixed_noise = torch.randn(condition.shape, device=device, dtype=condition.dtype, generator=g)
+    else:
+        # fallback: random each call
+        x = torch.randn_like(condition)
+        fixed_noise = torch.randn_like(condition)
+
+    # --- IMPORTANT: initialize known region at the starting timestep ---
+    t_start = times[0]
+    alpha_bar_start = alphas_cumprod[t_start]     # scalar tensor
+    known_xt = torch.sqrt(alpha_bar_start) * condition + torch.sqrt(1.0 - alpha_bar_start) * fixed_noise
+    x = x * (1.0 - mask) + known_xt * mask
+    x = torch.clamp(x, -SAFE_LIMIT, SAFE_LIMIT)
 
     with torch.no_grad():
         for i, t in enumerate(tqdm(times, desc="DDIM Sampling")):
-            t_tensor = torch.full((1,), t, device=device, dtype=torch.long)
+            t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
             t_prev = times[i + 1] if i < len(times) - 1 else -1
-            
+
+            # model forward
             model_input = torch.cat([x, condition, mask], dim=1)
             noise_pred = model(model_input, t_tensor, porosity)
-            
+
+            # alpha bars
             alpha_bar_t = alphas_cumprod[t]
-            alpha_bar_t_prev = alphas_cumprod[t_prev] if t_prev >= 0 else torch.tensor(1.0).to(device)
-            
-            pred_x0 = (x - torch.sqrt(1.0 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+            alpha_bar_prev = alphas_cumprod[t_prev] if t_prev >= 0 else torch.tensor(1.0, device=device)
+
+            # pred x0
+            pred_x0 = (x - torch.sqrt(1.0 - alpha_bar_t) * noise_pred) / (torch.sqrt(alpha_bar_t) + 1e-8)
             pred_x0 = torch.clamp(pred_x0, -SAFE_LIMIT, SAFE_LIMIT)
-            
-            pred_dir_xt = torch.sqrt(1.0 - alpha_bar_t_prev) * noise_pred
-            x_prev = torch.sqrt(alpha_bar_t_prev) * pred_x0 + pred_dir_xt
-            
+
+            # DDIM update (eta=0)
+            x_prev = torch.sqrt(alpha_bar_prev) * pred_x0 + torch.sqrt(1.0 - alpha_bar_prev) * noise_pred
+
+            # known-region injection (use SAME fixed_noise every step)
             if t_prev >= 0:
-                known_x_prev = torch.sqrt(alpha_bar_t_prev) * condition + torch.sqrt(1.0 - alpha_bar_t_prev) * fixed_noise
-                x = x_prev * (1 - mask) + known_x_prev * mask
+                known_x_prev = torch.sqrt(alpha_bar_prev) * condition + torch.sqrt(1.0 - alpha_bar_prev) * fixed_noise
+                x = x_prev * (1.0 - mask) + known_x_prev * mask
             else:
-                x = pred_x0 * (1 - mask) + condition * mask
-                
+                x = pred_x0 * (1.0 - mask) + condition * mask
+
             x = torch.clamp(x, -SAFE_LIMIT, SAFE_LIMIT)
-                
+
     return x
 
 def repaint_sample(model, condition, mask, porosity, device, n_resample=5):
@@ -300,138 +338,198 @@ def repaint_sample(model, condition, mask, porosity, device, n_resample=5):
     return x
 
 
-# ==========================================
-# 3. 主程序 (Main Pipeline)
-# ==========================================
+def decode_tiled_klvae(vae_model, z, latent_tile=16, latent_overlap=4, up_factor=8):
+    """
+    z: [1, C, 32, 32, 32]  (你的 KL-VAE latent)
+    输出: [1, 1, 256, 256, 256] (假设 decoder 输出 1 通道)
+    latent_tile: 每块 latent 的边长（16 -> 输出 128³）
+    latent_overlap: latent 的重叠（建议 4）
+    up_factor: 256/32 = 8
+    """
+    assert z.dim() == 5 and z.size(0) == 1
+    B, C, D, H, W = z.shape
+    device = z.device
 
+    step = latent_tile - latent_overlap
+    assert step > 0
+
+    out_D, out_H, out_W = D * up_factor, H * up_factor, W * up_factor
+    out = torch.zeros((1, 1, out_D, out_H, out_W), device=device, dtype=torch.float32)
+    wgt = torch.zeros_like(out)
+
+    # 简单的加权窗（避免拼接硬边）
+    # 这里用三角窗，够用了
+    def tri(n):
+        x = torch.linspace(0, 1, n, device=device)
+        w = 1.0 - (2.0 * (x - 0.5)).abs()
+        return w.clamp_min(0.0)
+
+    # decode 一个 patch，拿到输出通道数（避免你 decoder 不是 1 通道时挂）
+    # 但为了少占显存，这里不预跑；假设输出 1 通道，若不是你再改 out 的通道数即可
+
+    for dz in range(0, D, step):
+        for dy in range(0, H, step):
+            for dx in range(0, W, step):
+                z0, y0, x0 = dz, dy, dx
+                z1 = min(z0 + latent_tile, D)
+                y1 = min(y0 + latent_tile, H)
+                x1 = min(x0 + latent_tile, W)
+
+                # 向后对齐，保证 tile 尺寸一致（尤其到边界）
+                z0 = max(0, z1 - latent_tile)
+                y0 = max(0, y1 - latent_tile)
+                x0 = max(0, x1 - latent_tile)
+
+                patch = z[:, :, z0:z1, y0:y1, x0:x1]
+
+                with torch.no_grad():
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        dec = vae_model.decode(patch)  # [1, 1, tile*8, tile*8, tile*8] 期望
+
+                dec = dec.float()
+
+                # 对应到像素坐标
+                oz0, oy0, ox0 = z0 * up_factor, y0 * up_factor, x0 * up_factor
+                oz1, oy1, ox1 = z1 * up_factor, y1 * up_factor, x1 * up_factor
+
+                # 生成权重窗（按实际 patch 大小）
+                pD, pH, pW = dec.shape[-3:]
+                wz = tri(pD).view(1, 1, pD, 1, 1)
+                wy = tri(pH).view(1, 1, 1, pH, 1)
+                wx = tri(pW).view(1, 1, 1, 1, pW)
+                ww = (wz * wy * wx).float()
+
+                out[:, :, oz0:oz1, oy0:oy1, ox0:ox1] += dec * ww
+                wgt[:, :, oz0:oz1, oy0:oy1, ox0:ox1] += ww
+
+                # 及时释放 patch 的 decoder 输出缓存（减少峰值）
+                del dec, patch
+                torch.cuda.empty_cache()
+
+    out = out / (wgt + 1e-8)
+    return out
+
+
+# 3. 主程序 (Main Pipeline)
 def main():
     device = CONFIG['device']
     root = get_project_root()
-    
+
     # 1. 确定 Stage 2 模型路径
     models_dir = os.path.join(root, "exp_results", CONFIG['experiment_name'], "models")
     model_files = sorted(glob.glob(os.path.join(models_dir, "unet_epoch_*.pth")), key=os.path.getmtime)
-    if not model_files: print("❌ No models found"); return
-    model_path = model_files[-1] 
-    
+    if not model_files:
+        print("❌ No models found")
+        return
+    model_path = model_files[-1]
+
     # 2. 加载模型 (KL-VAE + Diffusion)
     diffusion_model, vae_model = load_models(model_path, device)
-    
+
     # 3. 准备输出目录
     save_dir = os.path.join(root, "exp_results", CONFIG['experiment_name'], "inference_outputs", "final_test_klvae")
     os.makedirs(save_dir, exist_ok=True)
-    
+
     # 4. 获取测试数据 (Latent .npy)
-    # 注意：这里我们直接读取处理好的 Latent NPY，这样保证了和训练时一致
     data_files = glob.glob(os.path.join(CONFIG['processed_data_dir'], "*.npy"))
-    if not data_files: 
-         # 尝试从 config 的列表里找
-         if isinstance(CONFIG['processed_data_dir'], list):
-             for d in CONFIG['processed_data_dir']:
-                 data_files += glob.glob(os.path.join(d, "*.npy"))
-    
-    if not data_files: print("❌ No test data found"); return
-    sample_file = random.choice(data_files)
+    if not data_files and isinstance(CONFIG['processed_data_dir'], list):
+        for d in CONFIG['processed_data_dir']:
+            data_files += glob.glob(os.path.join(d, "*.npy"))
+
+    if not data_files:
+        print("❌ No test data found")
+        return
+
+    if FIXED_SAMPLE is not None:
+        sample_file = FIXED_SAMPLE
+        if not os.path.exists(sample_file):
+            print(f"❌ FIXED_SAMPLE not found: {sample_file}")
+            return
+    else:
+        sample_file = random.choice(data_files)
+
     fname = os.path.basename(sample_file)
     print(f"\n📄 Processing: {fname}")
-
-    # ================= 数据流转 (Data Flow) =================
 
     # Step A: 加载原始数据 (Latent)
     gt_raw = np.load(sample_file)
     gt_tensor = torch.from_numpy(gt_raw).float().to(device)
-    if gt_tensor.dim() == 4: # (C, D, H, W) -> (1, C, D, H, W)
+    if gt_tensor.dim() == 4:
         gt_tensor = gt_tensor.unsqueeze(0)
 
     # Step B: 缩放 (Entering Diffusion Space)
     scale = CONFIG['scale_factor']
     gt_scaled = gt_tensor * scale
-    
-    # 截断保护
+    # gt_scaled = gt_tensor
+
     safe_thresh = CONFIG.get('safe_threshold', 6.0)
     gt_scaled = torch.clamp(gt_scaled, min=-safe_thresh, max=safe_thresh)
-    
+
     # Step C: 创建 Mask
     D = gt_scaled.shape[2]
-    mask = torch.zeros_like(gt_scaled) # (1, C, D, H, W)
-    split_point = int(D * 0.5) 
-    # Core Extension Task: 已知 Top 50%
-    mask[..., :split_point, :, :] = 1.0 
-    
-    # Mask 输入只需要单通道
-    mask_input = mask[:, 0:1, ...] 
+    mask = torch.zeros_like(gt_scaled)
+    split_point = int(D * 0.5)
+    mask[..., :split_point, :, :] = 1.0
 
-    # Condition
+    mask_input = mask[:, 0:1, ...]
+
+    if SANITY == "all1":
+        mask_input[:] = 1.0
+    elif SANITY == "all0":
+        mask_input[:] = 0.0
+
     condition = gt_scaled * mask_input
 
     # Step D: 提取孔隙度
     match = re.search(r'porosity_([0-9]*\.?[0-9]+)', fname)
     porosity_val = float(match.group(1)) if match else 0.15
-    porosity = torch.tensor([porosity_val]).to(device).view(1,1)
+    porosity = torch.tensor([porosity_val]).to(device).view(1, 1)
+
+    print("gt_tensor", gt_tensor.mean().item(), gt_tensor.std().item(), gt_tensor.min().item(), gt_tensor.max().item())
+    print("gt_scaled", gt_scaled.mean().item(), gt_scaled.std().item(), gt_scaled.min().item(), gt_scaled.max().item())
+    print("mask", mask_input.mean().item(), mask_input.min().item(), mask_input.max().item())
+    print("condition", condition.mean().item(), condition.std().item(), condition.min().item(), condition.max().item())
+
 
     # Step E: 采样
-    MODE = 'ddim' # 或 'repaint'
-    # MODE = 'repaint' # 或 'repaint'
-    
+    MODE = 'ddim'  # 或 'repaint'
+
     with torch.no_grad():
         if MODE == 'ddim':
-            gen_scaled = ddim_sample(diffusion_model, condition, mask_input, porosity, device, ddim_steps=500)
+            gen_scaled = ddim_sample(diffusion_model, condition, mask_input, porosity, device, ddim_steps=600)
         elif MODE == 'repaint':
             gen_scaled = repaint_sample(diffusion_model, condition, mask_input, porosity, device, n_resample=10)
+        else:
+            print(f"❌ Unknown MODE: {MODE}")
+            return
 
         # Step F: 还原 (Leaving Diffusion Space)
         gen_restored = gen_scaled / scale
         gt_restored = gt_tensor
-        
-        # 强制修正：如果生成的 std 异常大，强制拉回正常范围
-        if gen_restored.std() > gt_restored.std() * 3:
-            print("⚠️ WARNING: Generated values too high! Rescaling...")
-            gen_restored = (gen_restored - gen_restored.mean()) / gen_restored.std() * gt_restored.std() + gt_restored.mean()
 
-        # Step G: KL-VAE 解码 (Latent -> Pixel)
+        # Step G: KL-VAE 解码 (Latent -> Pixel) - 使用分块解码
         print("  🎨 Decoding with KL-VAE...")
-        
-        # ⚠️ 注意: KL-VAE decode 输入通常不需要特别的归一化，只要维度对即可
-        # 记得 autocast，因为 VAE 显存占用大
         with torch.amp.autocast('cuda'):
-            recon_gen = vae_model.decode(gen_restored) 
-            recon_gt = vae_model.decode(gt_restored)
-            
-            # 创建仅包含 Condition 的 Latent 进行解码 (用于可视化)
-            # 注意: 直接解码 mask 过的 Latent 可能会有伪影，但为了可视化 Condition 是必要的
-            cond_restored = condition / scale
-            recon_cond = vae_model.decode(cond_restored)
+            recon_gen = decode_tiled_klvae(vae_model, gen_restored, latent_tile=16, latent_overlap=4, up_factor=8)
+            recon_gt  = decode_tiled_klvae(vae_model, gt_restored,  latent_tile=16, latent_overlap=4, up_factor=8)
 
-    # ================= 结果保存与可视化 =================
+    # 结果转 numpy
     vol_gen = recon_gen[0, 0].cpu().float().numpy()
-    vol_gt = recon_gt[0, 0].cpu().float().numpy()
-    vol_cond_viz = recon_cond[0, 0].cpu().float().numpy()
-    
-    # 计算 Latent 到 Pixel 的缩放倍数 (用于可视化 Mask 边界)
-    # 比如 Latent 64, Pixel 256 -> factor 4
+    vol_gt  = recon_gt[0, 0].cpu().float().numpy()
+
+    # Mask 插值到 Pixel 尺寸（用于可视化边界）
     latent_dim = gt_tensor.shape[2]
     pixel_dim = vol_gen.shape[0]
     upscale_factor = pixel_dim // latent_dim
-    
-    # Mask 插值到 Pixel 尺寸
     mask_pixel = torch.nn.functional.interpolate(mask_input, scale_factor=upscale_factor, mode='nearest')
     mask_pixel_np = mask_pixel[0, 0].cpu().numpy()
-    
-    # 让 Condition 可视化更直观：未知区域抹黑
-    # vol_cond_viz[mask_pixel_np == 0] = -1 # 或者设为背景色
 
-    # 保存 NifTI
-    nib.save(nib.Nifti1Image(vol_gen, np.eye(4)), os.path.join(save_dir, f"{fname}_{MODE}_gen.nii.gz"))
-    
-    # 可视化
-    viz_path = os.path.join(save_dir, f"{fname}_{MODE}_LDM.png")
-    visualize_inference_results(vol_gt, vol_cond_viz, vol_gen, mask_pixel_np, viz_path, fname)
+    # Input Condition 可视化：用 GT 的像素域遮罩（避免 decode masked-latent 产生棋盘伪影）
+    vol_cond_viz = vol_gt.copy()
+    vol_cond_viz[mask_pixel_np == 0] = vol_gt.min()
 
-    # =========== 🔴 新增：直方图匹配 (Histogram Matching) ===========
-    # 这就像给生成的图片加了一个“滤镜”，强制它的黑白分布和 GT 一样
-    # 如果生成的结构是对的，这一步会让它瞬间变清晰
+    # 直方图匹配（默认关闭，先看结构）
     print("  🎨 Applying Histogram Matching...")
-    
     def match_histogram(source, template):
         oldshape = source.shape
         source = source.ravel()
@@ -445,18 +543,12 @@ def main():
         interp_t_values = np.interp(s_quantiles, t_quantiles, t_values)
         return interp_t_values[bin_idx].reshape(oldshape)
 
-    # 使用 GT 的分布来修正生成的分布
-    vol_gen_matched = vol_gen  # 默认：不做匹配就用原结果
-    if CONFIG.get('enable_hist_match', False):
+    vol_gen_matched = vol_gen
+    if (not FORCE_DISABLE_HIST_MATCH) and CONFIG.get('enable_hist_match', False):
         vol_gen_matched = match_histogram(vol_gen, vol_gt)
 
-
-    # 保存 NifTI (保存修正后的版本)
-    nib.save(nib.Nifti1Image(vol_gen_matched, np.eye(4)), os.path.join(save_dir, f"{fname}_{MODE}_gen_matched.nii.gz"))
-    
-    # 可视化 (使用修正后的版本进行画图)
+    # 可视化输出
     viz_path = os.path.join(save_dir, f"{fname}_{MODE}_LDM_matched.png")
-    # 注意：这里传入 vol_gen_matched
     visualize_inference_results(vol_gt, vol_cond_viz, vol_gen_matched, mask_pixel_np, viz_path, fname)
 
 if __name__ == "__main__":

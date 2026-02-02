@@ -6,7 +6,7 @@ experiment:
   save_dir: "./experiments"
 
 data:
-  data_root: "E:\\aligned_Training_Data" # 你的数据文件夹路径
+  data_root: "/chendou_space/data/aligned_Training_Data" # 你的数据文件夹路径
   file_extension: ".npy"               # 假设你的数据存为 npy，如果是 bin 请自行调整
   image_size: 256
   croped_size: 128                    # 请确认：如果想裁 128^3，改为 128，并调整 batch_size

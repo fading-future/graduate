@@ -14,13 +14,14 @@ from src.models.vae import KLVAE3D
 
 # ================= 配置 =================
 # Stage 1 VAE 的配置和权重
-VAE_CONFIG_PATH = "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config copy.yaml"
-VAE_CHECKPOINT = "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/experiments/exp01_cube_structure_v1/checkpoint_epoch_26.pt"
+VAE_CONFIG_PATH = "/chendou_space/chendou/paper_code/stage02_KLvae_single_code_v2/config/train_config.yaml"
+VAE_CHECKPOINT = CONFIG['stage1_model_path']
 
 # Stage 2 UNet 的权重
-EPOCH_TO_LOAD = 110
-UNET_CHECKPOINT = f"/chendou_space/chendou/paper_code/stage03_latent_ddpm_code/exp_results/exp_final_stage2_graduation/models/unet_epoch_{EPOCH_TO_LOAD}.pth"
+EPOCH_TO_LOAD = 21
+UNET_CHECKPOINT = f"/chendou_space/chendou/paper_code/stage03_latent_ddpm_code/exp_results/exp3_final_stage2_graduation/models/unet_epoch_{EPOCH_TO_LOAD}.pth"
 
+FIXED_BASENAME = 'porosity_0.160917_6-6-20 全部_z4032_y506_x585.npy'  # 例如 "porosity_0.123456_xxx.npy"
 DEVICE = "cuda"
 SAVE_DIR = "inference_results"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -29,7 +30,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 # 建议设为 16 或 20。
 # 16 -> 解码出 128^3 像素
 # 20 -> 解码出 160^3 像素
-LATENT_CROP_SIZE = 16
+LATENT_CROP_SIZE = 20
 
 def print_stats(name, x):
     print(f"[{name}] Mean: {x.mean().item():.3f} | Std: {x.std().item():.3f}")
@@ -73,7 +74,12 @@ def sample_demo():
     
     # 1. 拿一个测试数据
     dataset = LatentDataset(data_dir=CONFIG['processed_data_dir'], augment=False)
-    idx = np.random.randint(0, len(dataset))
+
+    if FIXED_BASENAME is None:
+        idx = np.random.randint(0, len(dataset))
+    else:
+        idx = next(i for i, p in enumerate(dataset.file_list) if os.path.basename(p) == FIXED_BASENAME)
+
     batch = dataset[idx]
     
     gt_latent_full = batch['GT'].unsqueeze(0).to(DEVICE)       
@@ -121,11 +127,12 @@ def sample_demo():
             # DDPM Step
             x = (1 / torch.sqrt(alpha)) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_cumprod))) * noise_pred) + torch.sqrt(beta) * noise
             
+            fixed_noise = torch.randn_like(gt_latent)
             # RePaint 策略 (关键步骤：强行把已知区域修正回 GT)
             if t > 0:
-                noise_gt = torch.randn_like(gt_latent)
-                gt_noisy = torch.sqrt(diffusion.alphas_cumprod[t-1]) * gt_latent + torch.sqrt(1 - diffusion.alphas_cumprod[t-1]) * noise_gt
-                x = x * (1 - mask) + gt_noisy * mask
+                alpha_bar_prev = diffusion.alphas_cumprod[t-1]
+                known_noisy = torch.sqrt(alpha_bar_prev) * condition + torch.sqrt(1 - alpha_bar_prev) * fixed_noise
+                x = x * (1 - mask) + known_noisy * mask
 
     # === 最后一步强制覆盖 ===
     x = x * (1 - mask) + gt_latent * mask 

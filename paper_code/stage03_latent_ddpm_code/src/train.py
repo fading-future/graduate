@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
@@ -67,26 +68,50 @@ def setup_experiment():
     with open(str(config_path), "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, indent=4, ensure_ascii=False)
 
-    # main training csv
+    # main training csv (keep same columns to avoid breaking existing file)
     csv_path = os.path.join(log_dir, "training_log.csv")
     if not os.path.exists(csv_path):
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['Epoch', 'Step', 'Loss', 'LR'])
 
-    # pred_x0 logging csv (separate file to avoid header mismatch)
+    # pred_x0 logging csv (keep)
     pred_csv_path = os.path.join(log_dir, "pred_x0_log.csv")
     if not os.path.exists(pred_csv_path):
         with open(pred_csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['Epoch', 'Step', 'Pred_x0_penalty'])
 
-    return model_dir, log_dir, csv_path, pred_csv_path
+    # NEW: region-wise error logging csv (do not touch old csv header)
+    # region_csv_path = os.path.join(log_dir, "region_loss_log.csv")
+    # if not os.path.exists(region_csv_path):
+    #     with open(region_csv_path, 'w', newline='') as f:
+    #         writer = csv.writer(f)
+    #         writer.writerow([
+    #             'Epoch', 'Step',
+    #             'DiffLoss_unknown', 'DiffLoss_known',
+    #             'KnownConsistency', 'UnknownRatio'
+    #         ])
+
+    region_csv_path = os.path.join(log_dir, "region_loss_log_v2.csv")
+
+    # 初始化 region CSV（如果不存在就写表头）
+    if not os.path.exists(region_csv_path):
+        with open(region_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Epoch", "Step",
+                "DiffLoss_unknown", "DiffLoss_known",
+                "KnownConsistency", "BoundaryX0Cons",
+                "UnknownRatio"
+            ])
+
+    return model_dir, log_dir, csv_path, pred_csv_path, region_csv_path
 
 # ---------------- main ----------------
 def main():
     print(f"🚀 Starting Stage 2 Training: {CONFIG['experiment_name']}")
-    model_dir, log_dir, csv_path, pred_csv_path = setup_experiment()
+    model_dir, log_dir, csv_path, pred_csv_path, region_csv_path = setup_experiment()
 
     dataset = LatentDataset(data_dir=CONFIG['processed_data_dir'])
     dataloader = DataLoader(
@@ -110,7 +135,7 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG['lr'])
     scheduler = CosineAnnealingLR(optimizer, T_max=CONFIG['epochs'], eta_min=1e-6)
     # criterion = nn.MSELoss()
-    criterion = nn.L1Loss()
+    # criterion = nn.L1Loss()
     diffusion = DiffusionTrainer(model, CONFIG)
     scaler = GradScaler('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -118,42 +143,50 @@ def main():
     start_epoch = 0
     
     # 1. 自动寻找最新的 checkpoint
-    import re
-    checkpoints = [f for f in os.listdir(model_dir) if f.startswith("unet_epoch_") and f.endswith(".pth")]
-    if len(checkpoints) > 0:
-        checkpoints.sort(key=lambda x: int(re.findall(r'\d+', x)[0]))
-        latest_ckpt = checkpoints[-1]
-        checkpoint_path = os.path.join(model_dir, latest_ckpt)
-        
-        print(f"🔄 Found latest checkpoint: {checkpoint_path}, loading...")
-        checkpoint = torch.load(checkpoint_path, map_location=CONFIG['device'])
-        
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
+    if CONFIG.get('resume', True):
+        import re
+        checkpoints = [f for f in os.listdir(model_dir) if f.startswith("unet_epoch_") and f.endswith(".pth")]
+        if len(checkpoints) > 0:
+            checkpoints.sort(key=lambda x: int(re.findall(r'\d+', x)[0]))
+            latest_ckpt = checkpoints[-1]
+            checkpoint_path = os.path.join(model_dir, latest_ckpt)
             
-            # --- 🔴 关键修改 1: 加载 Optimizer 但强制重置 LR ---
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print(f"🔄 Found latest checkpoint: {checkpoint_path}, loading...")
+            checkpoint = torch.load(checkpoint_path, map_location=CONFIG['device'])
             
-            if 'ema_state_dict' in checkpoint:
-                ema.load_state_dict(checkpoint['ema_state_dict'])
-                print("✅ EMA weights loaded.")
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                
+                # --- 🔴 关键修改 1: 加载 Optimizer 但强制重置 LR ---
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                for pg in optimizer.param_groups:
+                    pg['lr'] = CONFIG['lr']
+                print(f"✅ Optimizer loaded, LR reset to {CONFIG['lr']}")
+                
+                if 'ema_state_dict' in checkpoint:
+                    ema.load_state_dict(checkpoint['ema_state_dict'])
+                    print("✅ EMA weights loaded.")
+                else:
+                    ema = EMA(model, decay=0.9999).to(CONFIG['device'])
+                
+                if 'scheduler_state_dict' in checkpoint:
+                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    print("✅ Scheduler state loaded.")
+                
+                start_epoch = checkpoint['epoch']
+                print(f"✅ Loaded Dict: Resuming from Epoch {start_epoch}")
             else:
+                model.load_state_dict(checkpoint)
                 ema = EMA(model, decay=0.9999).to(CONFIG['device'])
-            
-            # --- 🔴 关键修改 2: 不要加载 Scheduler 状态 ---
-            if 'scheduler_state_dict' in checkpoint:
-                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            print("⚠️ Scheduler reset to start (New Stage Training)")
-            
-            start_epoch = checkpoint['epoch']
-            print(f"✅ Loaded Dict: Resuming from Epoch {start_epoch}")
+                start_epoch = 16 # 如果是纯权重，只能瞎猜或者手动指定
+                print(f"⚠️ Loaded Weights Only: Starting from Epoch {start_epoch + 1}")
         else:
-            model.load_state_dict(checkpoint)
-            ema = EMA(model, decay=0.9999).to(CONFIG['device'])
-            start_epoch = 16 # 如果是纯权重，只能瞎猜或者手动指定
-            print(f"⚠️ Loaded Weights Only: Starting from Epoch {start_epoch + 1}")
+            print("✨ No checkpoint found. Starting from scratch.")
     else:
-        print("✨ No checkpoint found. Starting from scratch.")
+        print("✨ Resume disabled. Starting from scratch.")
+        start_epoch = 0
+        global_step = 0
+
 
     # 2. 核心修改：优先从 CSV 对齐 global_step
     # 默认值 (数学估算)
@@ -199,57 +232,153 @@ def main():
                 model_input = torch.cat([x_noisy, condition, mask], dim=1)
                 noise_pred = model(model_input, t, porosity)
 
-                # ---- optional: min-SNR weighting ----
-                use_min_snr = CONFIG.get('use_min_snr', False)
-                gamma = float(CONFIG.get('min_snr_gamma', 5.0))
+                # ---------------- [NEW] region masks (broadcast to channels) ----------------
+                # mask: 1=known, 0=unknown
+                unknown = (1.0 - mask)  # (B,1,D,H,W)
+                known = mask
 
+                # broadcast to match noise_pred/noise shape: (B,C,D,H,W)
+                C = noise_pred.shape[1]
+                if C != 1:
+                    unknown_b = unknown.expand(-1, C, -1, -1, -1)
+                    known_b = known.expand(-1, C, -1, -1, -1)
+                else:
+                    unknown_b = unknown
+                    known_b = known
+
+                # ---------------- base raw loss per element ----------------
                 if CONFIG.get('loss_type', 'l1').lower() == 'mse':
                     raw = (noise_pred - noise) ** 2
                 else:
                     raw = torch.abs(noise_pred - noise)
 
+                # ---------------- optional: min-SNR weighting (still supports) ----------------
+                use_min_snr = CONFIG.get('use_min_snr', False)
+                gamma = float(CONFIG.get('min_snr_gamma', 5.0))
                 if use_min_snr:
                     alpha_bar_t = diffusion.alphas_cumprod[t].view(-1, 1, 1, 1, 1)
                     snr = alpha_bar_t / (1.0 - alpha_bar_t)
-                    w = torch.minimum(snr, torch.tensor(gamma, device=snr.device)) / snr
-                    loss_mse = (raw * w).mean()
-                else:
-                    loss_mse = raw.mean()
+                    w = torch.minimum(snr, torch.tensor(gamma, device=snr.device)) / snr  # (B,1,1,1,1)
+                    raw = raw * w  # broadcast ok
 
-                # ---------------- [Fix] pred_x0 soft-clamp penalty ----------------
+                band_width = int(CONFIG.get('boundary_band_width', 2))          # thickness in voxels, e.g. 2~4
+                band_weight = float(CONFIG.get('boundary_band_weight', 4.0))    # extra weight on boundary, e.g. 2~8
+
+                if band_width > 0 and band_weight > 0:
+                    # dilation over known/unknown to get "near boundary" region
+                    k = 2 * band_width + 1
+                    known_dil = F.max_pool3d(known, kernel_size=k, stride=1, padding=band_width)
+                    unk_dil   = F.max_pool3d(unknown, kernel_size=k, stride=1, padding=band_width)
+
+                    # near-boundary voxels: close to both known and unknown
+                    boundary_band = (known_dil * unk_dil).clamp(0.0, 1.0)     # (B,1,D,H,W)
+
+                    # weights only for unknown region
+                    weight_map = (1.0 + band_weight * boundary_band) * unknown   # (B,1,D,H,W)
+
+                    # broadcast to channels
+                    if C != 1:
+                        weight_map_b = weight_map.expand(-1, C, -1, -1, -1)
+                    else:
+                        weight_map_b = weight_map
+                else:
+                    # no weighting
+                    weight_map_b = unknown_b
+
+                den_u = weight_map_b.sum().clamp_min(1.0)
+                loss_diff_unknown = (raw * weight_map_b).sum() / den_u
+
+                # for logging only (not used in backward)
+                den_k = known_b.sum().clamp_min(1.0)
+                loss_diff_known = (raw * known_b).sum() / den_k
+
+                # ---------------- pred_x0 ----------------
                 alpha_bar_t = diffusion.alphas_cumprod[t].view(-1, 1, 1, 1, 1)
                 sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
                 sqrt_one_minus = torch.sqrt(1.0 - alpha_bar_t)
-                
-                # 1. 反推 pred_x0 (注意分母极小值)
-                pred_x0 = (x_noisy - sqrt_one_minus * noise_pred) / (sqrt_alpha_bar + 1e-5) # 稍微调大 epsilon
-                
-                # 2. 计算正则化项
-                safe_thresh = CONFIG.get('safe_threshold', 6.0)
-                
-                # 惩罚超出范围的部分
-                # 使用 Huber Loss 风格或 L2，这里用 L2
-                pred_x0_clamped = torch.clamp(pred_x0, min=-safe_thresh, max=safe_thresh)
-                penalty_raw = ((pred_x0 - pred_x0_clamped) ** 2)
+                pred_x0 = (x_noisy - sqrt_one_minus * noise_pred) / (sqrt_alpha_bar + 1e-5)
 
-                # 3. 【核心修复】SNR 加权 / 时间步加权
-                reg_weighting = alpha_bar_t  # 或者用 sqrt_alpha_bar，这里用 alpha_bar 更保守
-                
-                # 加权后的 Penalty (对 Batch 求平均)
+                # ---------------- clamp FIRST (so it exists) ----------------
+                safe_thresh = CONFIG.get('safe_threshold', 6.0)
+                pred_x0_clamped = torch.clamp(pred_x0, min=-safe_thresh, max=safe_thresh)
+
+                # ---------------- [NEW] known-consistency (stable) ----------------
+                known_cons_w = float(CONFIG.get('known_consistency_weight', 0.0))
+                known_cons_type = str(CONFIG.get('known_consistency_type', 'l1')).lower()
+
+                if known_cons_w > 0:
+                    pred_for_cons = pred_x0_clamped  # now defined
+
+                    if known_cons_type == 'mse':
+                        cons_raw = (pred_for_cons - x_0) ** 2
+                    else:
+                        cons_raw = torch.abs(pred_for_cons - x_0)
+
+                    # suppress large-t explosion
+                    cons_raw = cons_raw * alpha_bar_t
+
+                    loss_known_cons = (cons_raw * known_b).sum() / den_k
+                else:
+                    loss_known_cons = torch.zeros((), device=CONFIG['device'], dtype=pred_x0.dtype)
+
+                # ---------------- pred_x0 penalty (same as before) ----------------
+                penalty_raw = ((pred_x0 - pred_x0_clamped) ** 2)
+                reg_weighting = alpha_bar_t
                 pred_x0_penalty = (penalty_raw * reg_weighting).mean()
 
-                # 4. 计算总 Loss
-                reg_w = CONFIG.get('pred_x0_reg_weight', 0.1) # 权重建议 0.1
-                
-                # 5. 【最后一道防线】防止极端情况下的 NaN 或 Infinity
+                reg_w = CONFIG.get('pred_x0_reg_weight', 0.1)
                 if torch.isnan(pred_x0_penalty) or torch.isinf(pred_x0_penalty):
-                     pred_x0_penalty = torch.tensor(0.0, device=CONFIG['device'])
-                
-                # 将正则化项限制在一个合理范围 (例如最大 10.0)，防止冲垮 MSE Loss
+                    pred_x0_penalty = torch.tensor(0.0, device=CONFIG['device'])
                 pred_x0_penalty = torch.clamp(pred_x0_penalty, max=10.0)
 
-                loss = loss_mse + reg_w * pred_x0_penalty
-                # ---------------- end pred_x0 penalty ----------------
+
+                # ---------------- [NEW] boundary-band x0 consistency on UNKNOWN ----------------
+                bx_w = float(CONFIG.get('boundary_x0_consistency_weight', 0.0))
+                bx_type = str(CONFIG.get('boundary_x0_consistency_type', 'l1')).lower()
+
+                if bx_w > 0:
+                    # boundary_band: (B,1,D,H,W) you already computed above in boundary loss part
+                    # If band is disabled, boundary_band may not exist -> rebuild minimal boundary here
+                    if 'boundary_band' not in locals():
+                        band_width = int(CONFIG.get('boundary_band_width', 2))
+                        if band_width > 0:
+                            k = 2 * band_width + 1
+                            known_dil = F.max_pool3d(known, kernel_size=k, stride=1, padding=band_width)
+                            unk_dil   = F.max_pool3d(unknown, kernel_size=k, stride=1, padding=band_width)
+                            boundary_band = (known_dil * unk_dil).clamp(0.0, 1.0)
+                        else:
+                            boundary_band = torch.zeros_like(unknown)
+
+                    # only on UNKNOWN pixels near boundary
+                    boundary_unknown = boundary_band * unknown  # (B,1,D,H,W)
+
+                    # broadcast to C
+                    if C != 1:
+                        boundary_unknown_b = boundary_unknown.expand(-1, C, -1, -1, -1)
+                    else:
+                        boundary_unknown_b = boundary_unknown
+
+                    den_bx = boundary_unknown_b.sum().clamp_min(1.0)
+
+                    # x0 target: GT latent x_0
+                    if bx_type == 'mse':
+                        bx_raw = (pred_x0_clamped - x_0) ** 2
+                    else:
+                        bx_raw = torch.abs(pred_x0_clamped - x_0)
+
+                    # optional: you can keep alpha_bar_t weighting, but boundary already helps.
+                    # If you keep it, the term may become too small again.
+                    bx_raw = bx_raw * alpha_bar_t
+
+                    loss_boundary_x0 = (bx_raw * boundary_unknown_b).sum() / den_bx
+                else:
+                    loss_boundary_x0 = torch.zeros((), device=CONFIG['device'], dtype=pred_x0.dtype)
+
+
+                # ---------------- total loss ----------------
+                # loss = loss_diff_unknown + known_cons_w * loss_known_cons + reg_w * pred_x0_penalty
+
+                loss = loss_diff_unknown + known_cons_w * loss_known_cons + bx_w * loss_boundary_x0 + reg_w * pred_x0_penalty
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -276,6 +405,32 @@ def main():
                 with open(pred_csv_path, 'a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([epoch+1, global_step, float(pred_x0_penalty.detach().cpu().item())])
+
+            # ---- NEW: write region-wise losses ----
+            unknown_ratio = float((unknown.sum() / unknown.numel()).detach().cpu().item())  # ratio in [0,1]
+
+            # 保证 loss_boundary_x0 即使 bx_w==0 也存在（否则这里会报错）
+            bx_val = float(loss_boundary_x0.detach().cpu().item()) if 'loss_boundary_x0' in locals() else 0.0
+
+
+            with open(region_csv_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    epoch + 1, global_step,
+                    float(loss_diff_unknown.detach().cpu().item()),
+                    float(loss_diff_known.detach().cpu().item()),
+                    float(loss_known_cons.detach().cpu().item()),
+                    float(loss_boundary_x0.detach().cpu().item()),
+                    unknown_ratio
+                ])
+
+            pbar.set_postfix(
+                loss=f"{curr_loss_val:.4f}",
+                u=f"{float(loss_diff_unknown.detach().cpu()):.4f}",
+                k=f"{float(loss_diff_known.detach().cpu()):.4f}",
+                kc=f"{float(loss_known_cons.detach().cpu()):.4f}",
+                lr=f"{current_lr:.2e}"
+            )
 
         scheduler.step()
         avg_loss = epoch_loss / len(dataloader)
