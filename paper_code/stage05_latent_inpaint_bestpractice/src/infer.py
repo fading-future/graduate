@@ -98,9 +98,12 @@ def ddim_sample(model, cond, mask, porosity, diffusion: DiffusionHelper, steps=2
     times = list(reversed(times.tolist()))
 
     if seed is not None:
-        g = torch.Generator(device=cond.device)
-        g.manual_seed(int(seed))
-        fixed_noise = torch.randn_like(cond, generator=g)
+        # torch.randn_like(generator=...) is not available in some torch builds
+        # Use global RNG seeding for compatibility
+        torch.manual_seed(int(seed))
+        if cond.device.type == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
+        fixed_noise = torch.randn_like(cond)
         x = fixed_noise.clone()
     else:
         fixed_noise = torch.randn_like(cond)

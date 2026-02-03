@@ -252,7 +252,7 @@ def main():
                     f"{loss_lowfreq.item():.6f}",
                 ])
 
-        scheduler.step(epoch + 1)
+        scheduler.step()
 
         if (epoch + 1) % CONFIG["save_every"] == 0:
             save_path = os.path.join(model_dir, f"unet_epoch_{epoch+1}.pth")
