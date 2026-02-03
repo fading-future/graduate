@@ -77,7 +77,7 @@ def main():
 
     por_map = build_porosity_map(CONFIG["PATHS"]["porosity_csv"])
     c_cfg = CONFIG["COARSE"]
-    files = sorted(glob.glob(os.path.join(CONFIG["PATHS"]["raw_data_dir"], "*.npy")))
+    files = sorted(glob.glob(os.path.join(CONFIG["PATHS"]["raw_data_dir"], "*.npy")))[:1600]
 
     os.makedirs(args.out_dir, exist_ok=True)
 

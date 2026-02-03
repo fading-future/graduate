@@ -46,7 +46,7 @@ REFINE = {
     "patch_size": 96,
     "patch_overlap": 32,
 
-    "batch_size": 4,
+    "batch_size": 8,
     "num_workers": 8,
     "epochs": 200,
     "lr": 2e-4,

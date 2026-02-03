@@ -252,7 +252,7 @@ def main():
     with open(log_path, "a", encoding="utf-8") as f:
         if is_new:
             f.write("file,porosity,coarse_pred,refine_pred,vis\n")
-        f.write(f\"{os.path.basename(args.raw_file)},{por},{os.path.join(out_dir,'coarse_pred.npy')},{os.path.join(out_dir,'refine_pred.npy')},{viz_path}\\n\")
+        f.write(f"{os.path.basename(args.raw_file)},{por},{os.path.join(out_dir,'coarse_pred.npy')},{os.path.join(out_dir,'refine_pred.npy')},{viz_path}\n")
 
 
 if __name__ == "__main__":
