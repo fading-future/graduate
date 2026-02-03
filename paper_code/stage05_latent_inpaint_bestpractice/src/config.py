@@ -42,12 +42,12 @@ MASK = {
 TRAIN = {
     "experiment_name": "ldm_inpaint_bestpractice_v1",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "batch_size": 1,
-    "num_workers": 4,
+    "batch_size": 32,
+    "num_workers": 12,
     "pin_memory": True,
     "epochs": 300,
     "lr": 5e-5,
-    "save_every": 20,
+    "save_every": 2,
     "resume": True,
 }
 
