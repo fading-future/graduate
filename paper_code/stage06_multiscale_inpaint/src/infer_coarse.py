@@ -43,7 +43,7 @@ def make_mask(shape, axis: str, ratio: float, erosion: int):
     return mask
 
 
-def load_model(model_dir: str, in_channels: int, out_channels: int, base_channels: int, channel_mults, use_attention, device):
+def load_model(model_dir: str, device):
     ckpts = sorted(glob.glob(os.path.join(model_dir, "unet_epoch_*.pth")), key=os.path.getmtime)
     if not ckpts:
         latest = os.path.join(model_dir, "unet_latest.pth")
@@ -53,12 +53,13 @@ def load_model(model_dir: str, in_channels: int, out_channels: int, base_channel
             raise FileNotFoundError(f"No checkpoints found in {model_dir}")
     ckpt_path = ckpts[-1]
 
+    c_cfg = CONFIG["COARSE"]
     model = UNet3D(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        base_channels=base_channels,
-        channel_mults=channel_mults,
-        use_attention=use_attention,
+        in_channels=2,
+        out_channels=1,
+        base_channels=c_cfg["model_channels"],
+        channel_mults=c_cfg["channel_mults"],
+        use_attention=c_cfg["use_attention"],
     ).to(device)
 
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -68,10 +69,7 @@ def load_model(model_dir: str, in_channels: int, out_channels: int, base_channel
 
 
 def inference_coarse(model, vol, mask, por, coarse_size):
-    # vol: (1,1,256,256,256)
-    # mask: (1,1,256,256,256)
     cond = vol * mask
-    # downsample
     cond_c = F.interpolate(cond, size=(coarse_size,)*3, mode="trilinear", align_corners=False)
     mask_c = F.interpolate(mask, size=(coarse_size,)*3, mode="nearest")
 
@@ -79,54 +77,8 @@ def inference_coarse(model, vol, mask, por, coarse_size):
     with torch.no_grad():
         pred_c = model(inp, por)
 
-    # upsample to full
     pred_full = F.interpolate(pred_c, size=vol.shape[-3:], mode="trilinear", align_corners=False)
     return pred_full
-
-
-def inference_refine(model, vol, mask, coarse_full, por, patch_size, overlap):
-    # sliding window with weighted blending
-    device = vol.device
-    _, _, D, H, W = vol.shape
-    step = patch_size - overlap
-    out = torch.zeros_like(vol)
-    wgt = torch.zeros_like(vol)
-
-    # triangular window
-    def tri(n):
-        x = torch.linspace(0, 1, n, device=device)
-        w = 1.0 - (2.0 * (x - 0.5)).abs()
-        return w.clamp_min(0.0)
-
-    wz = tri(patch_size).view(1,1,patch_size,1,1)
-    wy = tri(patch_size).view(1,1,1,patch_size,1)
-    wx = tri(patch_size).view(1,1,1,1,patch_size)
-    ww = wz * wy * wx
-
-    for z in range(0, D, step):
-        for y in range(0, H, step):
-            for x in range(0, W, step):
-                z1 = min(z + patch_size, D)
-                y1 = min(y + patch_size, H)
-                x1 = min(x + patch_size, W)
-                z0 = max(0, z1 - patch_size)
-                y0 = max(0, y1 - patch_size)
-                x0 = max(0, x1 - patch_size)
-
-                gt_patch = vol[:, :, z0:z1, y0:y1, x0:x1]
-                mask_patch = mask[:, :, z0:z1, y0:y1, x0:x1]
-                cond_patch = gt_patch * mask_patch
-                coarse_patch = coarse_full[:, :, z0:z1, y0:y1, x0:x1]
-
-                inp = torch.cat([cond_patch, mask_patch, coarse_patch], dim=1)
-                with torch.no_grad():
-                    pred = model(inp, por)
-
-                out[:, :, z0:z1, y0:y1, x0:x1] += pred * ww
-                wgt[:, :, z0:z1, y0:y1, x0:x1] += ww
-
-    out = out / (wgt + 1e-8)
-    return out
 
 
 def visualize(vol_gt, vol_cond, vol_gen, mask, save_path):
@@ -136,7 +88,7 @@ def visualize(vol_gt, vol_cond, vol_gen, mask, save_path):
     cz, cy, cx = D//2, H//2, W//2
 
     fig, axes = plt.subplots(3, 3, figsize=(15, 15))
-    cols = ["GT", "Condition", "Generated"]
+    cols = ["GT", "Condition", "Coarse"]
     vols = [vol_gt, vol_cond, vol_gen]
 
     def draw_line(ax):
@@ -177,31 +129,9 @@ def main():
     device = torch.device(CONFIG["device"])
     root = get_root()
 
-    # load models
     coarse_model_dir = os.path.join(root, "exp_results", "coarse", "models")
-    refine_model_dir = os.path.join(root, "exp_results", "refine", "models")
+    model = load_model(coarse_model_dir, device)
 
-    coarse_model = load_model(
-        coarse_model_dir,
-        in_channels=2,
-        out_channels=1,
-        base_channels=CONFIG["COARSE"]["model_channels"],
-        channel_mults=CONFIG["COARSE"]["channel_mults"],
-        use_attention=CONFIG["COARSE"]["use_attention"],
-        device=device,
-    )
-
-    refine_model = load_model(
-        refine_model_dir,
-        in_channels=3,
-        out_channels=1,
-        base_channels=CONFIG["REFINE"]["model_channels"],
-        channel_mults=CONFIG["REFINE"]["channel_mults"],
-        use_attention=CONFIG["REFINE"]["use_attention"],
-        device=device,
-    )
-
-    # load data
     raw = np.load(args.raw_file, mmap_mode="r")
     vol = normalize_volume(raw)
 
@@ -215,35 +145,20 @@ def main():
     mask_t = torch.from_numpy(mask).unsqueeze(0).float().to(device)
     por_t = torch.tensor([por], dtype=torch.float32, device=device)
 
-    # coarse
-    coarse_full = inference_coarse(coarse_model, vol_t, mask_t, por_t, CONFIG["COARSE"]["coarse_size"])
+    coarse_full = inference_coarse(model, vol_t, mask_t, por_t, CONFIG["COARSE"]["coarse_size"])
 
-    # refine
-    refine_full = inference_refine(
-        refine_model,
-        vol_t,
-        mask_t,
-        coarse_full,
-        por_t,
-        CONFIG["REFINE"]["patch_size"],
-        CONFIG["REFINE"]["patch_overlap"],
-    )
-
-    # output
     out_dir = args.out_dir or os.path.join(root, "exp_results", "inference_outputs")
     os.makedirs(out_dir, exist_ok=True)
 
     np.save(os.path.join(out_dir, "coarse_pred.npy"), coarse_full[0,0].detach().cpu().numpy())
-    np.save(os.path.join(out_dir, "refine_pred.npy"), refine_full[0,0].detach().cpu().numpy())
 
-    # visualization
     vol_gt = vol
     cond = vol * mask[0]
     vol_cond = cond.copy()
     vol_cond[mask[0] == 0] = vol_gt.min()
 
-    viz_path = os.path.join(out_dir, "multiscale_inpaint_viz.png")
-    visualize(vol_gt, vol_cond, refine_full[0,0].detach().cpu().numpy(), mask[0], viz_path)
+    viz_path = os.path.join(out_dir, "coarse_inpaint_viz.png")
+    visualize(vol_gt, vol_cond, coarse_full[0,0].detach().cpu().numpy(), mask[0], viz_path)
     print(f"Saved: {viz_path}")
 
     # log inference
@@ -251,8 +166,8 @@ def main():
     is_new = not os.path.exists(log_path)
     with open(log_path, "a", encoding="utf-8") as f:
         if is_new:
-            f.write("file,porosity,coarse_pred,refine_pred,vis\n")
-        f.write(f\"{os.path.basename(args.raw_file)},{por},{os.path.join(out_dir,'coarse_pred.npy')},{os.path.join(out_dir,'refine_pred.npy')},{viz_path}\\n\")
+            f.write("file,porosity,coarse_pred,vis\n")
+        f.write(f"{os.path.basename(args.raw_file)},{por},{os.path.join(out_dir,'coarse_pred.npy')},{viz_path}\n")
 
 
 if __name__ == "__main__":
