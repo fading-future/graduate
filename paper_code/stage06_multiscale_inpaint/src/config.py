@@ -26,7 +26,7 @@ COARSE = {
     "input_size": 256,     # raw size
     "coarse_size": 64,     # downsample size (64 or 128)
 
-    "batch_size": 2,
+    "batch_size": 16,
     "num_workers": 8,
     "epochs": 200,
     "lr": 2e-4,
@@ -43,10 +43,10 @@ COARSE = {
 # ==========================================================
 REFINE = {
     "enabled": True,
-    "patch_size": 128,
+    "patch_size": 96,
     "patch_overlap": 32,
 
-    "batch_size": 2,
+    "batch_size": 4,
     "num_workers": 8,
     "epochs": 200,
     "lr": 2e-4,
@@ -58,7 +58,7 @@ REFINE = {
     "use_attention": (False, True, True),
 
     # optional cache to avoid recomputing coarse prediction during training
-    "coarse_cache_dir": "",
+    "coarse_cache_dir": "/chendou_space/data/coarse_cache",
 }
 
 # ==========================================================

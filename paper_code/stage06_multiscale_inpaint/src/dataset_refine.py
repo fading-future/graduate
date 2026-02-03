@@ -42,7 +42,7 @@ def make_mask(shape, axis: str, ratio: float, erosion: int):
 
 class RefineDataset(Dataset):
     def __init__(self, data_dir: str, patch_size: int, coarse_cache_dir: str = "", augment: bool = True):
-        self.files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
+        self.files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))[:1600]
         if len(self.files) == 0:
             raise ValueError(f"No files found in {data_dir}")
         self.patch = patch_size

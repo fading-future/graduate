@@ -42,7 +42,7 @@ def make_mask(shape, axis: str, ratio: float, erosion: int):
 
 class CoarseDataset(Dataset):
     def __init__(self, data_dir: str, coarse_size: int, augment: bool = True):
-        self.files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
+        self.files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))[:1600]
         if len(self.files) == 0:
             raise ValueError(f"No files found in {data_dir}")
         self.coarse_size = coarse_size
