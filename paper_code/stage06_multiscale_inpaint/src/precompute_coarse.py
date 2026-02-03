@@ -76,6 +76,7 @@ def main():
     model = load_model(model_dir, device)
 
     por_map = build_porosity_map(CONFIG["PATHS"]["porosity_csv"])
+    c_cfg = CONFIG["COARSE"]
     files = sorted(glob.glob(os.path.join(CONFIG["PATHS"]["raw_data_dir"], "*.npy")))
 
     os.makedirs(args.out_dir, exist_ok=True)
