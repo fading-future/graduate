@@ -49,7 +49,7 @@ TRAIN = {
     "lr": 5e-5,
     "save_every": 2,
     # 额外：按 step 保存临时 checkpoint（0 表示关闭）
-    "save_every_steps": 0,
+    "save_every_steps": 1000,
     "resume": True,
     # 是否在 resume 时强制把 LR 重置为 config 里的 lr
     # 频繁暂停/重启建议 False（保持调度器/优化器状态连续）
