@@ -88,7 +88,7 @@ def make_mask_pixel(shape, axis: str, ratio: float):
     return mask, cut
 
 
-def ddim_sample(model, cond, mask, porosity, diffusion: DiffusionHelper, steps=200, seed=1234, safe_thresh=8.0):
+def ddim_sample(model, cond, mask, porosity, diffusion: DiffusionHelper, steps=500, seed=1234, safe_thresh=8.0):
     model.eval()
     total_timesteps = diffusion.timesteps
     alphas_cumprod = diffusion.alphas_cumprod
