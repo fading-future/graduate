@@ -22,3 +22,6 @@ wheels/
 # 数据
 paper_data
 pytorch_pkgs
+
+# mac 电脑的隐藏文件
+.DS_Store
