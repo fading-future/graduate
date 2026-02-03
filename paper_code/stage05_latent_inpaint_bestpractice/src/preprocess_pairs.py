@@ -95,8 +95,10 @@ def make_mask_pixel(shape, axis: str, ratio: float, jitter_ratio: float) -> Tupl
 
 
 def downsample_factor_from_cfg(cfg: dict) -> int:
+    # Encoder downsamples for each stage except the last one
+    # (see KLVAE3D Encoder: downsample when i != len(ch_mult)-1)
     ch_mult = cfg["model"]["ch_mult"]
-    return 2 ** len(ch_mult)
+    return 2 ** max(0, (len(ch_mult) - 1))
 
 
 def main():
@@ -164,6 +166,10 @@ def main():
 
         # latent mask (downsampled cut)
         zc, zd, zh, zw = z_full_np.shape
+        # safer: compute downsample from actual shapes (robust to config mismatch)
+        inferred_down = int(round(raw.shape[0] / float(zd)))
+        if inferred_down != downsample:
+            downsample = inferred_down  # override with actual ratio
         cut_latent = max(1, min(int(round(cut_pixel / downsample)), zd - 1))
         mask_latent = np.zeros((1, zd, zh, zw), dtype=np.float32)
         if axis.upper() == "D":
