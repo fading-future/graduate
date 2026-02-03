@@ -58,6 +58,11 @@ class PairedLatentDataset(Dataset):
                 z_cond = np.flip(z_cond, axis=3)
                 mask = np.flip(mask, axis=3)
 
+        # Ensure contiguous arrays (np.flip creates negative strides)
+        z_full = np.ascontiguousarray(z_full)
+        z_cond = np.ascontiguousarray(z_cond)
+        mask = np.ascontiguousarray(mask)
+
         z_full_t = torch.from_numpy(z_full).float()
         z_cond_t = torch.from_numpy(z_cond).float()
         mask_t = torch.from_numpy(mask).float()
