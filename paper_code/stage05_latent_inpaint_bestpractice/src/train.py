@@ -196,11 +196,22 @@ def main():
                 boundary_unknown_b = boundary_unknown.expand(-1, C, -1, -1, -1)
                 loss_x0_boundary = (x0_raw * boundary_unknown_b).sum() / boundary_unknown_b.sum().clamp_min(1.0)
 
-                # low-frequency x0 loss (avg pool)
+                # low-frequency x0 loss (avg pool with SAME output size)
                 if lowfreq_w > 0 and lowfreq_k > 1:
-                    pad = lowfreq_k // 2
-                    x0_lp = F.avg_pool3d(x0, kernel_size=lowfreq_k, stride=1, padding=pad)
-                    pred_lp = F.avg_pool3d(pred_x0, kernel_size=lowfreq_k, stride=1, padding=pad)
+                    if lowfreq_k % 2 == 1:
+                        pad = lowfreq_k // 2
+                        x0_lp = F.avg_pool3d(x0, kernel_size=lowfreq_k, stride=1, padding=pad)
+                        pred_lp = F.avg_pool3d(pred_x0, kernel_size=lowfreq_k, stride=1, padding=pad)
+                    else:
+                        # for even kernel, use asymmetric padding to keep size
+                        total_pad = lowfreq_k - 1
+                        p0 = total_pad // 2
+                        p1 = total_pad - p0
+                        pad_tuple = (p0, p1, p0, p1, p0, p1)  # W, H, D
+                        x0_pad = F.pad(x0, pad_tuple, mode="replicate")
+                        pred_pad = F.pad(pred_x0, pad_tuple, mode="replicate")
+                        x0_lp = F.avg_pool3d(x0_pad, kernel_size=lowfreq_k, stride=1, padding=0)
+                        pred_lp = F.avg_pool3d(pred_pad, kernel_size=lowfreq_k, stride=1, padding=0)
                     lp_raw = torch.abs(pred_lp - x0_lp)
                     loss_lowfreq = (lp_raw * unknown_b).sum() / unknown_b.sum().clamp_min(1.0)
                 else:
