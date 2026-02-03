@@ -45,6 +45,9 @@ def setup_experiment():
 
 
 def load_latest_checkpoint(model_dir, device):
+    latest_path = os.path.join(model_dir, "unet_latest.pth")
+    if os.path.exists(latest_path):
+        return latest_path
     ckpts = [f for f in os.listdir(model_dir) if f.startswith("unet_epoch_") and f.endswith(".pth")]
     if len(ckpts) == 0:
         return None
@@ -93,9 +96,10 @@ def main():
             scheduler.load_state_dict(ckpt["scheduler_state_dict"])
             start_epoch = int(ckpt["epoch"])  # resume from next epoch
             global_step = int(ckpt.get("global_step", 0))
-            # reset lr to config
-            for pg in optimizer.param_groups:
-                pg["lr"] = CONFIG["lr"]
+            # optional: reset lr to config (default False for seamless resume)
+            if CONFIG.get("reset_lr_on_resume", False):
+                for pg in optimizer.param_groups:
+                    pg["lr"] = CONFIG["lr"]
 
     print(f"🚀 Start training at epoch {start_epoch}, step {global_step}")
 
@@ -251,6 +255,19 @@ def main():
                     f"{loss_x0_boundary.item():.6f}",
                     f"{loss_lowfreq.item():.6f}",
                 ])
+
+            # step-based checkpoint (optional)
+            save_every_steps = int(CONFIG.get("save_every_steps", 0))
+            if save_every_steps > 0 and global_step % save_every_steps == 0:
+                latest_path = os.path.join(model_dir, "unet_latest.pth")
+                torch.save({
+                    "epoch": epoch + 1,
+                    "global_step": global_step,
+                    "model_state_dict": model.state_dict(),
+                    "ema_state_dict": ema.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                }, latest_path)
 
         scheduler.step()
 

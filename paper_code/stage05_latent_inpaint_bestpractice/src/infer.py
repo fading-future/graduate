@@ -274,6 +274,8 @@ def main():
 
     # prepare condition
     gt_latent = None
+    raw_norm = None
+    mask_pixel_np = None
     if args.paired_npz is not None:
         data = np.load(args.paired_npz)
         z_cond = data["z_cond"].astype(np.float32)
@@ -293,7 +295,9 @@ def main():
 
         raw = np.load(args.raw_file, mmap_mode="r").astype(np.float32)
         raw = (raw / 65535.0) * 2.0 - 1.0
+        raw_norm = raw  # keep for GT visualization
         mask_pixel, _ = make_mask_pixel(raw.shape, CONFIG["axis"], float(CONFIG["ratio"]))
+        mask_pixel_np = mask_pixel[0]  # (D,H,W)
         cond_pixel = raw[None, ...] * mask_pixel
 
         x_cond = torch.from_numpy(cond_pixel).unsqueeze(0).to(device)
@@ -346,16 +350,15 @@ def main():
             with torch.no_grad():
                 recon_gt = decode_tiled_klvae(vae, gt_latent)
             vol_gt = recon_gt[0, 0].cpu().float().numpy()
+        elif raw_norm is not None:
+            # use real pixel-space GT if raw file is provided
+            vol_gt = raw_norm
         else:
             vol_gt = vol_gen.copy()
 
         # visualize condition in pixel by masking GT if available
-        mask_pixel = None
-        if args.raw_file is not None:
-            raw = np.load(args.raw_file, mmap_mode="r").astype(np.float32)
-            raw = (raw / 65535.0) * 2.0 - 1.0
-            mask_pixel, _ = make_mask_pixel(raw.shape, CONFIG["axis"], float(CONFIG["ratio"]))
-            mask_pixel = mask_pixel[0]  # (D,H,W)
+        if mask_pixel_np is not None:
+            mask_pixel = mask_pixel_np
         else:
             # upsample latent mask for visualization
             up = vol_gen.shape[0] // mask.shape[2]
