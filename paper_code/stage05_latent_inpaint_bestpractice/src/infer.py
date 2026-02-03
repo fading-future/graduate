@@ -254,6 +254,7 @@ def main():
     if len(ckpts) == 0:
         raise FileNotFoundError("No checkpoints found.")
     ckpt_path = ckpts[-1]
+    print(ckpt_path)
 
     model = ConditionalLatentUNet(
         in_channels=CONFIG["in_channels"],

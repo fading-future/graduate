@@ -24,7 +24,7 @@ PATHS = {
 
     # 预处理输出（z_full / z_cond / mask / porosity）
     # "paired_data_dir": r"E:\\stage2_latents_inpaint_pairs",
-    "paired_data_dir": "/chendou_space/data/stage2_latents_inpaint_pairs", # Linux 路径
+    "paired_data_dir": "/chendou_space/data/stage2_latents_inpaint_pairs_v2_small", # Linux 路径
 }
 
 # ==========================================================
@@ -41,9 +41,9 @@ MASK = {
 # 训练/推理主要超参
 # ==========================================================
 TRAIN = {
-    "experiment_name": "ldm_inpaint_bestpractice_v1",
+    "experiment_name": "ldm_inpaint_bestpractice_v2",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "batch_size": 32,
+    "batch_size": 16,
     "num_workers": 12,
     "pin_memory": True,
     "epochs": 300,
