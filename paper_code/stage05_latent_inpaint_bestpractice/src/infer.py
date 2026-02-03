@@ -311,6 +311,8 @@ def main():
         zc, zd, zh, zw = z_cond.shape[1:]
         mask = torch.zeros((1, 1, zd, zh, zw), device=device)
         cut = int(zd * float(CONFIG["ratio"]))
+        erosion = int(CONFIG.get("latent_erosion", 0))
+        cut = max(0, cut - erosion)
         mask[:, :, :cut, :, :] = 1.0
     else:
         raise ValueError("Provide --paired_npz or --raw_file")
@@ -318,6 +320,8 @@ def main():
     # scale + clamp
     z_cond = z_cond * scale_factor
     z_cond = torch.clamp(z_cond, -safe_thresh, safe_thresh)
+    # apply erosion mask to condition (remove boundary artifact)
+    z_cond = z_cond * mask
 
     # sample
     gen = ddim_sample(

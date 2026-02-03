@@ -167,7 +167,7 @@ def main():
         # latent mask (downsampled cut)
         zc, zd, zh, zw = z_full_np.shape
         # safer: compute downsample from actual shapes (robust to config mismatch)
-        inferred_down = int(round(raw.shape[0] / float(zd)))
+        inferred_down = int(round(data.shape[0] / float(zd)))
         if inferred_down != downsample:
             downsample = inferred_down  # override with actual ratio
         cut_latent = max(1, min(int(round(cut_pixel / downsample)), zd - 1))

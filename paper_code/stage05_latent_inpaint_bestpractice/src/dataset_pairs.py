@@ -58,6 +58,37 @@ class PairedLatentDataset(Dataset):
                 z_cond = np.flip(z_cond, axis=3)
                 mask = np.flip(mask, axis=3)
 
+        # latent boundary erosion (remove 1-2 slices near the cut)
+        erosion = int(CONFIG.get("latent_erosion", 0))
+        axis = str(CONFIG.get("axis", "D")).upper()
+        if erosion > 0:
+            # infer cut position from mask itself
+            m = mask[0]  # (D,H,W)
+            if axis == "D":
+                profile = m.mean(axis=(1, 2))  # (D,)
+                idx = np.where(profile > 0.5)[0]
+                cut = int(idx[-1] + 1) if len(idx) > 0 else 0
+                new_cut = max(0, cut - erosion)
+                mask = np.zeros_like(mask)
+                mask[:, :new_cut, :, :] = 1.0
+            elif axis == "H":
+                profile = m.mean(axis=(0, 2))  # (H,)
+                idx = np.where(profile > 0.5)[0]
+                cut = int(idx[-1] + 1) if len(idx) > 0 else 0
+                new_cut = max(0, cut - erosion)
+                mask = np.zeros_like(mask)
+                mask[:, :, :new_cut, :] = 1.0
+            else:  # "W"
+                profile = m.mean(axis=(0, 1))  # (W,)
+                idx = np.where(profile > 0.5)[0]
+                cut = int(idx[-1] + 1) if len(idx) > 0 else 0
+                new_cut = max(0, cut - erosion)
+                mask = np.zeros_like(mask)
+                mask[:, :, :, :new_cut] = 1.0
+
+            # apply eroded mask to condition
+            z_cond = z_cond * mask
+
         # Ensure contiguous arrays (np.flip creates negative strides)
         z_full = np.ascontiguousarray(z_full)
         z_cond = np.ascontiguousarray(z_cond)
