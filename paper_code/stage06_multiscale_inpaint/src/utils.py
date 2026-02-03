@@ -5,7 +5,7 @@ from typing import Dict
 
 
 def get_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def build_porosity_map(csv_path: str) -> Dict[str, float]:
