@@ -355,6 +355,7 @@ def main():
             raw = np.load(args.raw_file, mmap_mode="r").astype(np.float32)
             raw = (raw / 65535.0) * 2.0 - 1.0
             mask_pixel, _ = make_mask_pixel(raw.shape, CONFIG["axis"], float(CONFIG["ratio"]))
+            mask_pixel = mask_pixel[0]  # (D,H,W)
         else:
             # upsample latent mask for visualization
             up = vol_gen.shape[0] // mask.shape[2]
