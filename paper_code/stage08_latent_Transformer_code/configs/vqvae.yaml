@@ -1,0 +1,34 @@
+seed: 42
+
+data:
+  raw_data_dir: /chendou_space/data/binary_Training_Data
+  porosity_csv: /chendou_space/data/aligned_Training_Data/processing_report.csv
+  file_glob: "*.npy"
+  patch_size: 64
+  patch_stride: 32
+  train_split: 0.9
+  num_workers: 4
+  pore_value: 1
+  max_train_samples: null
+
+model:
+  in_channels: 1
+  out_channels: 1
+  encoder_channels: [16, 64, 128, 256, 512]
+  decoder_channels: [512, 256, 256, 64, 16, 16]
+  latent_dim: 256
+  num_res_blocks_enc: 2
+  num_res_blocks_dec: 3
+  groups: 16
+  codebook_size: 3000
+  beta: 1
+
+train:
+  epochs: 25
+  batch_size: 20
+  lr: 0.0005
+  beta1: 0.9
+  beta2: 0.999
+  codebook_weight_init: 0.02
+  codebook_weight_increase: 0.02
+  codebook_weight_max: 2.0

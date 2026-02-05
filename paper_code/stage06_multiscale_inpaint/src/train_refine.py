@@ -105,8 +105,9 @@ def main():
     known_w = CONFIG["LOSS"].get("known_weight", 0.1)
     boundary_w = CONFIG["LOSS"].get("boundary_weight", 1.0)
     band = int(CONFIG["LOSS"].get("boundary_band", 4))
-    coarse_w = CONFIG["LOSS"].get("coarse_guidance_weight", 0.1)
+    coarse_w = CONFIG["LOSS"].get("coarse_guidance_weight", 0.0)
     grad_w = CONFIG["LOSS"].get("grad_weight", 0.0)
+    residual_pred = bool(CONFIG["REFINE"].get("residual_pred", False))
 
     for epoch in range(start_epoch, r_cfg["epochs"]):
         model.train()
@@ -122,6 +123,8 @@ def main():
             with autocast("cuda" if device.type == "cuda" else "cpu"):
                 inp = torch.cat([cond, mask, coarse], dim=1)
                 pred = model(inp, por)
+                if residual_pred:
+                    pred = pred + coarse
 
                 unknown = 1.0 - mask
                 known = mask
@@ -133,7 +136,7 @@ def main():
                 bband = boundary_band(mask, band)
                 loss_boundary = (l1 * bband).sum() / bband.sum().clamp_min(1.0)
 
-                # coarse guidance on unknown region
+                # coarse guidance on unknown region (optional)
                 loss_coarse = (torch.abs(pred - coarse) * unknown).sum() / unknown.sum().clamp_min(1.0)
 
                 loss = loss_unknown + known_w * loss_known + boundary_w * loss_boundary + coarse_w * loss_coarse

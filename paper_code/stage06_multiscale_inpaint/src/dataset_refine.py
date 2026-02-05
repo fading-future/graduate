@@ -82,12 +82,34 @@ class RefineDataset(Dataset):
             gt_c = F.interpolate(gt_t, size=(coarse_size,)*3, mode="trilinear", align_corners=False)
             coarse_full = F.interpolate(gt_c, size=vol.shape, mode="trilinear", align_corners=False)[0,0].numpy()
 
-        # random crop
+        # random crop (optionally focus around boundary)
         D, H, W = vol.shape
         p = self.patch
-        z0 = random.randint(0, D - p)
-        y0 = random.randint(0, H - p)
-        x0 = random.randint(0, W - p)
+        axis = CONFIG["TASK"]["axis"].upper()
+        focus_prob = float(CONFIG["REFINE"].get("boundary_focus_prob", 0.0))
+        focus_margin = int(CONFIG["REFINE"].get("boundary_focus_margin", 8))
+
+        if random.random() < focus_prob:
+            # center patch around boundary
+            if axis == "D":
+                center = cut
+                z0 = max(0, min(D - p, center - p // 2 + random.randint(-focus_margin, focus_margin)))
+                y0 = random.randint(0, H - p)
+                x0 = random.randint(0, W - p)
+            elif axis == "H":
+                center = cut
+                y0 = max(0, min(H - p, center - p // 2 + random.randint(-focus_margin, focus_margin)))
+                z0 = random.randint(0, D - p)
+                x0 = random.randint(0, W - p)
+            else:
+                center = cut
+                x0 = max(0, min(W - p, center - p // 2 + random.randint(-focus_margin, focus_margin)))
+                z0 = random.randint(0, D - p)
+                y0 = random.randint(0, H - p)
+        else:
+            z0 = random.randint(0, D - p)
+            y0 = random.randint(0, H - p)
+            x0 = random.randint(0, W - p)
 
         gt_patch = vol[z0:z0+p, y0:y0+p, x0:x0+p]
         cond_patch = cond_full[0, z0:z0+p, y0:y0+p, x0:x0+p]

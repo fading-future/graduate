@@ -229,12 +229,18 @@ def main():
         CONFIG["REFINE"]["patch_overlap"],
     )
 
+    # residual mode: refine predicts delta on top of coarse
+    if CONFIG["REFINE"].get("residual_pred", False):
+        refine_full = refine_full + coarse_full
+
     # output
     out_dir = args.out_dir or os.path.join(root, "exp_results", "inference_outputs")
     os.makedirs(out_dir, exist_ok=True)
 
-    np.save(os.path.join(out_dir, "coarse_pred.npy"), coarse_full[0,0].detach().cpu().numpy())
-    np.save(os.path.join(out_dir, "refine_pred.npy"), refine_full[0,0].detach().cpu().numpy())
+    coarse_np = coarse_full[0,0].detach().cpu().numpy()
+    refine_np = refine_full[0,0].detach().cpu().numpy()
+    np.save(os.path.join(out_dir, "coarse_pred.npy"), coarse_np)
+    np.save(os.path.join(out_dir, "refine_pred.npy"), refine_np)
 
     # visualization
     vol_gt = vol
@@ -243,7 +249,7 @@ def main():
     vol_cond[mask[0] == 0] = vol_gt.min()
 
     viz_path = os.path.join(out_dir, "multiscale_inpaint_viz.png")
-    visualize(vol_gt, vol_cond, refine_full[0,0].detach().cpu().numpy(), mask[0], viz_path)
+    visualize(vol_gt, vol_cond, refine_np, mask[0], viz_path)
     print(f"Saved: {viz_path}")
 
     # log inference
@@ -251,8 +257,19 @@ def main():
     is_new = not os.path.exists(log_path)
     with open(log_path, "a", encoding="utf-8") as f:
         if is_new:
-            f.write("file,porosity,coarse_pred,refine_pred,vis\n")
-        f.write(f"{os.path.basename(args.raw_file)},{por},{os.path.join(out_dir,'coarse_pred.npy')},{os.path.join(out_dir,'refine_pred.npy')},{viz_path}\n")
+            f.write("file,porosity,coarse_pred,refine_pred,vis,mae_unknown,mae_known\n")
+        # compute MAE for quick sanity
+        mask_np = mask[0]
+        unknown = (mask_np == 0)
+        known = (mask_np == 1)
+        mae_unknown = float(np.mean(np.abs(refine_np[unknown] - coarse_np[unknown]))) if unknown.any() else 0.0
+        mae_known = float(np.mean(np.abs(refine_np[known] - coarse_np[known]))) if known.any() else 0.0
+        f.write(
+            f"{os.path.basename(args.raw_file)},{por},"
+            f"{os.path.join(out_dir,'coarse_pred.npy')},"
+            f"{os.path.join(out_dir,'refine_pred.npy')},"
+            f"{viz_path},{mae_unknown:.6f},{mae_known:.6f}\n"
+        )
 
 
 if __name__ == "__main__":

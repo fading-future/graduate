@@ -59,6 +59,11 @@ REFINE = {
 
     # optional cache to avoid recomputing coarse prediction during training
     "coarse_cache_dir": "/chendou_space/data/coarse_cache",
+
+    # refine behavior
+    "residual_pred": True,          # predict residual on top of coarse
+    "boundary_focus_prob": 0.7,     # probability to sample patches around cut boundary
+    "boundary_focus_margin": 8,     # random jitter (voxels) around boundary center
 }
 
 # ==========================================================
@@ -68,8 +73,8 @@ LOSS = {
     "known_weight": 0.1,      # small weight on known region
     "boundary_weight": 1.0,   # stronger on boundary band (unknown near cut)
     "boundary_band": 4,       # band width in pixels
-    "coarse_guidance_weight": 0.1,  # refine: L1 to coarse guidance (unknown)
-    "grad_weight": 0.0,       # optional gradient loss (keep 0 initially)
+    "coarse_guidance_weight": 0.0,  # refine: L1 to coarse guidance (unknown)
+    "grad_weight": 0.2,       # encourage high-frequency detail in refine
 }
 
 # ==========================================================
