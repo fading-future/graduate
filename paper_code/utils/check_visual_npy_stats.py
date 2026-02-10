@@ -15,7 +15,7 @@ plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 #%%
 # 文件路径
-file_path = r"/chendou_space/data/aligned_Training_Data_Interactive/6-6-20 全部_z5184_y448_x659.npy"
+file_path = r"D:\多尺度岩心数据集\Final_Result_Sorted\6-6-21_Global_Consistency_z320_y256_x256.npy"
 
 try:
     # 加载数据

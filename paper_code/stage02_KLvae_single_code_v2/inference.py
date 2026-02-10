@@ -21,7 +21,7 @@ SAVE_DIR = r"/chendou_space/data/stage2_latents_full_256"
 # 显卡设置
 DEVICE = "cuda"
 # A100 80G 处理 256^3 的数据，Batch Size 建议设为 1 或 2，大了容易 OOM
-BATCH_SIZE = 2 
+BATCH_SIZE = 1 
 
 # ================= 1. 修改后的 Dataset (不裁剪) =================
 class InferenceDataset(Dataset):
@@ -42,9 +42,23 @@ class InferenceDataset(Dataset):
         # A100 机器内存通常很大，直接读更快且不易出错。
         data = np.load(path) 
         
-        # 归一化 [-1, 1]
         data = data.astype(np.float32)
-        data = (data / 65535.0) * 2.0 - 1.0
+
+        # 若数据已经是 [-1,1]，直接使用（避免再次缩放）
+        mn, mx = float(data.min()), float(data.max())
+        if mn >= -1.01 and mx <= 1.01:
+            # 已经在 [-1,1] 或 [0,1]
+            if mn >= 0.0 and mx <= 1.01:
+                data = data * 2.0 - 1.0  # [0,1] -> [-1,1]
+            # else: 认为已经是 [-1,1]，不动
+        else:
+            # 处理常见二值/灰度标度：0/1, 0/255, 0/65535
+            if mx <= 1.5:
+                data = data * 2.0 - 1.0            # 0/1
+            elif mx <= 255.5:
+                data = (data / 255.0) * 2.0 - 1.0  # 0/255 (uint8 二值最常见)
+            else:
+                data = (data / 65535.0) * 2.0 - 1.0  # 0/65535 (uint16)
 
         # === 核心修改：不再裁剪 ===
         # 直接增加 Channel 维度 -> [1, 256, 256, 256]

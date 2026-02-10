@@ -7,12 +7,13 @@ from torchvision.utils import save_image
 from models.vae import KLVAE3D
 
 # === 配置部分 ===
-EPOCH_TO_TEST = 38  # 你想测试的 epoch 数
+EPOCH_TO_TEST = 10  # 你想测试的 epoch 数
 # 你的 npy 数据路径 (请修改这里)
 # SAMPLE_NPY_PATH = r"E:\aligned_Training_Data\6-6-20 全部_z640_y530_x449.npy" 
-SAMPLE_NPY_PATH = r"E:\aligned_Training_Data\6-6-22_z1344_y576_x240.npy"
+SAMPLE_NPY_PATH = r"D:\多尺度岩心数据集\Final_Result_Sorted\6-6-21_Global_Consistency_z320_y192_x448.npy"
+# SAMPLE_NPY_PATH = r""
 # 你的训练好的模型路径 (请修改这里)
-CHECKPOINT_PATH = rf"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp03_cube_structure_v1\ckpt_epoch_{EPOCH_TO_TEST}.pt" # 举例
+CHECKPOINT_PATH = rf"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp04_cube_structure_v1\ckpt_epoch_{EPOCH_TO_TEST}.pt" # 举例
 CONFIG_PATH = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\config\train_config.yaml"
 
 def load_config(path):
@@ -59,12 +60,33 @@ def inference_single_volume():
         target_file = SAMPLE_NPY_PATH
 
     print("Loading NPY data...")
-    data_np = np.load(target_file).astype(np.float32)
-    # Norm to [-1, 1]
-    data_np = (data_np / 65535.0) * 2.0 - 1.0
     
+    data_np = np.load(target_file).astype(np.float32)
+
+    # 建议：先打印“真正原始值域”（放在归一化前）
+    print("RAW(before norm) min/max/unique:", data_np.min(), data_np.max(), np.unique(data_np)[:10])
+
+    mn, mx = float(data_np.min()), float(data_np.max())
+    if mn >= -1.01 and mx <= 1.01:
+        if mn >= 0.0 and mx <= 1.01:
+            data_np = data_np * 2.0 - 1.0
+    else:
+        if mx <= 1.5:
+            data_np = data_np * 2.0 - 1.0
+        elif mx <= 255.5:
+            data_np = (data_np / 255.0) * 2.0 - 1.0
+        else:
+            data_np = (data_np / 65535.0) * 2.0 - 1.0
+
+    print("AFTER(norm) min/max/unique:", data_np.min(), data_np.max(), np.unique(data_np)[:10])
+
+    vol = data_np  # [256,256,256]
+    s = 64
+    vol = vol[128-s:128+s, 128-s:128+s, 128-s:128+s]  # 128^3
+    input_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0).to(device)
+
     # [D, H, W] -> [1, 1, D, H, W]
-    input_tensor = torch.from_numpy(data_np).unsqueeze(0).unsqueeze(0).to(device)
+    # input_tensor = torch.from_numpy(data_np).unsqueeze(0).unsqueeze(0).to(device)
     print(f"Input shape: {input_tensor.shape}")
 
     # 3. Inference
@@ -78,13 +100,20 @@ def inference_single_volume():
     print(f"Recon shape: {reconstruction.shape}")
 
     # 4. Save Slices
-    # 将 Tensor 转回 CPU
-    real = input_tensor[0, 0].float().cpu() # [D, H, W]
-    recon = reconstruction[0, 0].float().cpu() # [D, H, W]
-    
-    # 限制范围 [-1, 1] -> [0, 1]
+    real = input_tensor[0, 0].float().cpu()                 # [-1,1]
+    recon_logits = reconstruction[0, 0].float().cpu()        # logits
+
+    r = recon_logits.detach().cpu().numpy()
+    print("recon logits min/max/mean:", r.min(), r.max(), r.mean())
+
+    # real: [-1,1] -> [0,1]
     real = (real.clamp(-1, 1) + 1) / 2
-    recon = (recon.clamp(-1, 1) + 1) / 2
+
+    # recon: logits -> prob [0,1]
+    recon = torch.sigmoid(recon_logits)
+
+    # （可选）如果你想看二值效果：
+    recon = (recon > 0.5).float()
 
     D, H, W = real.shape
     

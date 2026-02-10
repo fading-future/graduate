@@ -25,13 +25,18 @@ torch.backends.cudnn.allow_tf32 = True
 
 
 def load_config(path):
+    """
+    加载 YAML 配置文件
+    """
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-
 def hinge_d_loss(logits_real, logits_fake):
+    """
+    计算判别器的 Hinge Loss
+    D 需要最大化 logit_real - logit_fake
+    """
     return 0.5 * (torch.mean(F.relu(1.0 - logits_real)) + torch.mean(F.relu(1.0 + logits_fake)))
-
 
 def fix_compile_state_dict(state_dict):
     """
@@ -45,26 +50,29 @@ def fix_compile_state_dict(state_dict):
             new_state[k] = v
     return new_state
 
-
 def calc_latent_volume(cfg):
     """
     根据 config 的 image_size 与 ch_mult 计算 latent spatial volume (D*H*W)
     假设每次 ch_mult 表示下采样 /2（总下采样因子为 2**len(ch_mult)）
     """
-    image_size = cfg['data']['image_size']
+    # 训练实际输入边长：优先用 croped_size（训练集确实在 dataset 里 crop）
+    image_size = cfg['data'].get('croped_size', cfg['data']['image_size'])
+
+    # 实际下采样次数 = len(ch_mult) - 1（最后一层不再 stride=2）
     ch_mult_len = len(cfg['model']['ch_mult'])
-    downsample = 2 ** ch_mult_len
+    downsample = 2 ** max(ch_mult_len - 1, 0)
+
     if image_size % downsample != 0:
         raise ValueError(f"image_size {image_size} not divisible by downsample factor {downsample}")
+
     latent_edge = image_size // downsample
     return latent_edge ** 3  # D*H*W
-
 
 def human_time():
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
-
 def main():
+    # 1. 解析命令行参数，加载配置文件，设置随机种子，准备日志记录器和设备
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config/train_config.yaml')
     parser.add_argument('--resume', type=str, default=None, help='path to checkpoint to resume from')
@@ -72,6 +80,7 @@ def main():
     parser.add_argument('--reset-kl', action='store_true', help='if set, reset KL warmup on resume (force warmup from 0)')
     args = parser.parse_args()
 
+    # 2. 加载配置，准备实验目录和日志记录器
     cfg = load_config(args.config)
     exp_dir = os.path.join(cfg['experiment']['save_dir'], cfg['experiment']['exp_name'])
     os.makedirs(exp_dir, exist_ok=True)
@@ -83,7 +92,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"[{human_time()}] Running on {device}")
 
-    # Dataset / Dataloader
+    # 3. 初始化数据集对象 & 数据加载器对象
     dataset = CubeDataset(cfg['data']['data_root'],
                           cfg['data']['file_extension'],
                           crop_size=cfg['data']['croped_size'],
@@ -95,11 +104,11 @@ def main():
                             pin_memory=True,
                             persistent_workers=False)
 
-    # Models
+    # 4. 初始化模型对象：VAE 模型，判别器模型
     vae = KLVAE3D(cfg).to(device)
     discriminator = NLayerDiscriminator3D().to(device)
 
-    # Optimizers
+    # 5. 初始化优化器对象
     opt_vae = Adam(vae.parameters(), lr=float(cfg['train']['lr']), betas=(0.5, 0.9))
     opt_disc = Adam(discriminator.parameters(), lr=float(cfg['train']['lr']), betas=(0.5, 0.9))
 
@@ -217,14 +226,30 @@ def main():
             # === Train VAE (Generator) ===
             opt_vae.zero_grad()
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                reconstructions, posterior = vae(images)
+                # reconstructions, posterior = vae(images)
 
-                rec_loss = torch.mean(torch.abs(images - reconstructions))  # L1
+                # rec_loss = torch.mean(torch.abs(images - reconstructions))  # L1
+
+                recon_logits, posterior = vae(images)
+
+                # images 在 [-1,1]，转成 0/1 target：孔隙(-1)->0，骨架(+1)->1
+                target = (images + 1.0) / 2.0
+
+                # 估计正类(骨架)比例，用于 pos_weight 防止塌到全 1
+                p = target.mean().clamp(1e-4, 1 - 1e-4)
+                pos_weight = ((1 - p) / p).detach()
+
+                rec_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                    recon_logits, target, pos_weight=pos_weight
+                )
+
                 kl_per_sample = posterior.kl()
                 kl_loss = torch.mean(kl_per_sample)
 
                 if global_step > disc_start:
-                    logits_fake_for_g = discriminator(reconstructions)
+                    # logits_fake_for_g = discriminator(reconstructions)
+                    recon_img = torch.tanh(recon_logits)  # [-1,1]
+                    logits_fake_for_g = discriminator(recon_img)
                     g_adv_loss = -torch.mean(logits_fake_for_g)
                 else:
                     g_adv_loss = torch.tensor(0.0, device=device)
@@ -252,7 +277,8 @@ def main():
                 opt_disc.zero_grad()
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     logits_real = discriminator(images)
-                    logits_fake = discriminator(reconstructions.detach())
+                    # logits_fake = discriminator(reconstructions.detach())
+                    logits_fake = discriminator(recon_img.detach())
                     loss_d = hinge_d_loss(logits_real, logits_fake)
                 loss_d.backward()
                 grad_norm_disc = torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=1.0)

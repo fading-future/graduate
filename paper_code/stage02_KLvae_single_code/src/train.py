@@ -23,29 +23,27 @@ torch.backends.cudnn.benchmark = True
 
 def main():
     device = torch.device("cuda")
+    
+    # 1. 初始化实验文件 & CSV 日志文件
     os.makedirs(CONFIG['save_dir'], exist_ok=True)
-
-    # 1. 初始化 CSV 日志文件
-    # =======================================================
     csv_path = os.path.join(CONFIG['save_dir'], f"training_logs_{CONFIG['exp_name']}.csv")
     print(f"📝 Logging full training metrics to: {csv_path}")
     
-    # 定义 CSV 表头
+    # 1.1 定义 CSV 表头
     headers = [
         "Epoch", "Global_Step", "Time", "LR",
         "VAE_Total_Loss", "Rec_Loss(L1)", "P_Loss(LPIPS)", "KL_Loss", "G_Loss(Adv)", "D_Weight",
         "D_Loss(Disc)", "Logits_Real", "Logits_Fake"
     ]
     
-    # 如果是第一次运行，创建文件并写入表头；如果是断点续训，则追加
+    # 1.2 如果是第一次运行，创建文件并写入表头；如果是断点续训，则追加
     mode = 'a' if os.path.exists(csv_path) else 'w'
     log_file = open(csv_path, mode, newline='', buffering=1) # buffering=1 表示行缓冲，每写一行就存盘
     writer = csv.writer(log_file)
     if mode == 'w':
         writer.writerow(headers)
-    # =======================================================
 
-    # 2. Data
+    # 2. 初始化数据集对象 & 数据加载器对象
     dataset = Core3DDataset(
         data_dir=CONFIG['data_path'],
         global_min=CONFIG['global_min'],
@@ -65,17 +63,14 @@ def main():
     )
     print(f"✅ Data loaded: {len(dataset)} volumes. Batch Size: {CONFIG['batch_size']}")
 
-    # 3. Models
+    # 3. 初始化模型对象：VAE 模型，判别器模型，损失函数模块
     vae = VAE3D(CONFIG['model']).to(device)
     discriminator = NLayerDiscriminator3D().to(device)
     loss_module = VAEGANLoss(**CONFIG['loss_weights']).to(device)
 
-    # 4. Optimizers
+    # 4. 初始化优化器对象
     opt_vae = optim.AdamW(vae.parameters(), lr=CONFIG['lr'], betas=(0.5, 0.9))
     opt_disc = optim.AdamW(discriminator.parameters(), lr=CONFIG['lr'], betas=(0.5, 0.9))
-    
-    # 注意：A100 使用 BFloat16 通常不需要 GradScaler，移除它可以进一步提速并减少 NaN 风险
-    # scaler = torch.amp.GradScaler('cuda') 
 
     global_step = 0
     start_time = time.time()

@@ -14,7 +14,7 @@ class NLayerDiscriminator3D(nn.Module):
             nf_mult = min(2 ** n, 8)
             sequence += [
                 nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=False),
-                nn.BatchNorm3d(ndf * nf_mult),
+                nn.InstanceNorm3d(ndf * nf_mult, affine=True),
                 nn.LeakyReLU(0.2, True)
             ]
 
@@ -22,7 +22,7 @@ class NLayerDiscriminator3D(nn.Module):
         nf_mult = min(2 ** n_layers, 8)
         sequence += [
             nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=False),
-            nn.BatchNorm3d(ndf * nf_mult),
+            nn.InstanceNorm3d(ndf * nf_mult, affine=True),
             nn.LeakyReLU(0.2, True)
         ]
 

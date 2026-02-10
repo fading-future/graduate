@@ -17,7 +17,12 @@ class ResBlock3D(nn.Module):
         return x + self.block(x)
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels, base_channels, ch_mult, num_res_blocks, z_channels):
+    def __init__(self, 
+                 in_channels,       # 输入数据的通道数，1 
+                 base_channels,     # 基础通道数，64
+                 ch_mult,           # 每层通道倍增列表，[1,2,2,4]
+                 num_res_blocks,    # 每层的 ResBlock 数量，1
+                 z_channels):       # latent 的通道数，4
         super().__init__()
         self.layers = nn.ModuleList()
         # Initial Conv
@@ -75,7 +80,7 @@ class Decoder(nn.Module):
             nn.GroupNorm(8, cur_channels),
             nn.SiLU(),
             nn.Conv3d(cur_channels, out_channels, 3, padding=1),
-            nn.Tanh() # 强制输出到 [-1, 1]
+            # nn.Tanh() # 强制输出到 [-1, 1]
         )
 
     def forward(self, x):

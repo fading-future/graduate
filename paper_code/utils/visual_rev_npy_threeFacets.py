@@ -25,7 +25,7 @@ CONFIG = {
     'src_root': r"D:\多尺度岩心数据集\Final_Result_Sorted",  # npy文件所在目录
     
     # 【关键修改】在这里指定文件名模式
-    'file_pattern': "6-6-21*.npy"  
+    'file_pattern': "6-6-24*.npy"  
 }
 
 #%%

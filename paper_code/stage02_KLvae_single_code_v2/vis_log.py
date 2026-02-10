@@ -7,7 +7,7 @@ import numpy as np
 #%%
 # ================= 配置区域 =================
 # 替换成你实际的 CSV 文件路径
-csv_path = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp03_cube_structure_v1\train_log.csv"
+csv_path = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp04_cube_structure_v1\train_log.csv"
 
 # 平滑窗口大小
 SMOOTH_WINDOW = 20
