@@ -22,10 +22,10 @@ plt.rcParams['axes.unicode_minus'] = False
 CONFIG = {
     # 可以根据需要调整这里的参数
     'num_samples': 15,  # 随机抽检的样本数量
-    'src_root': r"D:\多尺度岩心数据集\Binary_NPY_Strict",  # npy文件所在目录
+    'src_root': r"D:\多尺度岩心数据集\Final_Result_Sorted",  # npy文件所在目录
     
     # 【关键修改】在这里指定文件名模式
-    'file_pattern': "6-6-24*.npy"  
+    'file_pattern': "6-6-21*.npy"  
 }
 
 #%%
