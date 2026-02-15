@@ -7,7 +7,7 @@ import random
 
 class CubeDataset(Dataset):
     def __init__(self, data_root, ext=".npy", crop_size=128, is_train=True):
-        self.files = sorted(glob.glob(os.path.join(data_root, f"*{ext}")))[-1600:]  # 取后1600个文件，避免一次性加载过多
+        self.files = sorted(glob.glob(os.path.join(data_root, f"*{ext}")))[:8000]
         self.crop_size = crop_size
         self.is_train = is_train
         print(f"Dataset: {len(self.files)} files. Crop size: {crop_size}")
@@ -20,27 +20,6 @@ class CubeDataset(Dataset):
 
         data = np.load(path, mmap_mode='r').astype(np.float32)
         data = data / 127.5 - 1.0   # 等价于 (data/255)*2 - 1
-        
-        # data = np.load(path) # shape (256, 256, 256)
-        # data = np.load(path, mmap_mode='r')
-
-        # data = data.astype(np.float32)
-
-        # # 若数据已经是 [-1,1], 直接使用（避免再次缩放）
-        # mn, mx = float(data.min()), float(data.max())
-        # if mn >= -1.01 and mx <= 1.01:
-        #     # 已经在 [-1,1] 或 [0,1]
-        #     if mn >= 0.0 and mx <= 1.01:
-        #         data = data * 2.0 - 1.0  # [0,1] -> [-1,1]
-        #     # else: 认为已经是 [-1,1]，不动
-        # else:
-        #     # 处理常见二值/灰度标度：0/1, 0/255, 0/65535
-        #     if mx <= 1.5:
-        #         data = data * 2.0 - 1.0            # 0/1
-        #     elif mx <= 255.5:
-        #         data = (data / 255.0) * 2.0 - 1.0  # 0/255 (uint8 二值最常见)
-        #     else:
-        #         data = (data / 65535.0) * 2.0 - 1.0  # 0/65535 (uint16)
 
         # 2. 随机切块 (Random Crop)
         if self.is_train:

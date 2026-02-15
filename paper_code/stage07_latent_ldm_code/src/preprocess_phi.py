@@ -34,6 +34,41 @@ def compute_phi_map(vol: np.ndarray, patch_voxel: int) -> np.ndarray:
     return phi.astype(np.float32)
 
 
+def normalize_to_unit(vol: np.ndarray) -> np.ndarray:
+    vol = vol.astype(np.float32)
+    mn, mx = float(vol.min()), float(vol.max())
+
+    # already [0,1]
+    if mn >= 0.0 and mx <= 1.0 + 1e-6:
+        return np.clip(vol, 0.0, 1.0)
+
+    # already [-1,1]
+    if mn >= -1.01 and mx <= 1.01:
+        return np.clip((vol + 1.0) * 0.5, 0.0, 1.0)
+
+    # common integer ranges
+    if mx <= 255.5:
+        return np.clip(vol / 255.0, 0.0, 1.0)
+    return np.clip(vol / 65535.0, 0.0, 1.0)
+
+
+def center_crop_cube(vol: np.ndarray, target_size: int) -> np.ndarray:
+    if target_size is None or int(target_size) <= 0:
+        return vol
+    if vol.ndim != 3:
+        raise ValueError(f"Expected 3D volume, got shape={vol.shape}.")
+    target_size = int(target_size)
+    D, H, W = vol.shape
+    if target_size > D or target_size > H or target_size > W:
+        raise ValueError(f"target_size={target_size} is larger than input shape {vol.shape}.")
+    if D == target_size and H == target_size and W == target_size:
+        return vol
+    d0 = (D - target_size) // 2
+    h0 = (H - target_size) // 2
+    w0 = (W - target_size) // 2
+    return vol[d0:d0 + target_size, h0:h0 + target_size, w0:w0 + target_size]
+
+
 def main():
     raw_dir = CONFIG["raw_data_dir"]
     out_dir = CONFIG["phi_map_dir"]
@@ -49,14 +84,13 @@ def main():
 
     mode = str(CONFIG.get("binarize_mode", "fixed")).lower()
     fixed_thr = float(CONFIG.get("binarize_threshold", 0.5))
+    phi_target = int(CONFIG.get("phi_input_target_size", 0))
 
     for fp in tqdm(files, desc="PhiMap"):
         base = os.path.basename(fp)
         vol = np.load(fp).astype(np.float32)
-
-        # normalize to [0,1] if 16-bit
-        if vol.max() > 1.0:
-            vol = np.clip(vol / 65535.0, 0.0, 1.0)
+        vol = center_crop_cube(vol, phi_target)
+        vol = normalize_to_unit(vol)
 
         if mode == "otsu":
             thr = otsu_threshold(vol)

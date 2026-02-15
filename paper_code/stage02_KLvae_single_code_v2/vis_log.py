@@ -7,7 +7,7 @@ import numpy as np
 #%%
 # ================= 配置区域 =================
 # 替换成你实际的 CSV 文件路径
-csv_path = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp04_cube_structure_v1\train_log.csv"
+csv_path = r"E:\chendou\paper_code\stage02_KLvae_single_code_v2\experiments\exp05_cube_structure_v2\train_log.csv"
 
 # 平滑窗口大小
 SMOOTH_WINDOW = 20
@@ -21,7 +21,19 @@ if not os.path.exists(csv_path):
     df = pd.DataFrame()
 else:
     try:
-        df = pd.read_csv(csv_path)
+        try:
+            # 先按 UTF-8（含 BOM）读
+            df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            # 再尝试 Windows 常见编码
+            df = pd.read_csv(csv_path, encoding="gbk")  # 若仍失败，把 gbk 改成 "cp950" 或 "latin1"
+        
+        # 过滤掉可能的空行
+        df.columns = [c.strip() for c in df.columns]  # 顺便去掉列名空格，避免 'Step ' 这种
+        df['Step'] = pd.to_numeric(df['Step'], errors='coerce')  # 强制 Step 转数字
+        df = df.dropna(subset=['Step'])
+
+        print(f"✅ 成功加载日志，共 {len(df)} 条记录")
         # 过滤掉可能的空行
         df = df.dropna(subset=['Step'])
         
@@ -76,7 +88,7 @@ if not df.empty:
     if 'KL_avg_per_latent' in df.columns:
         # 左轴：显示每个 Latent 的平均 KL
         line1 = ax2.plot(df_smooth['Step'], df_smooth['KL_avg_per_latent'], color='#ff7f0e', linewidth=2, label='Avg KL per Latent')
-        ax2.set_ylabel('Avg KL (nats)', color='#ff7f0e')
+        # ax2.set_ylabel('Avg KL (nats)', color='#ff7f0e')
         ax2.tick_params(axis='y', labelcolor='#ff7f0e')
         
         # 警戒线
@@ -91,8 +103,8 @@ if not df.empty:
             ax2b.tick_params(axis='y', labelcolor='gray')
             
             lines = line1 + line2
-            labels = [l.get_label() for l in lines] + ['Warning (0.5)', 'Target (0.1)']
-            ax2.legend(lines + [plt.Line2D([0], [0], color='red', linestyle=':'), plt.Line2D([0], [0], color='green', linestyle=':')], labels, loc='upper right')
+            # labels = [l.get_label() for l in lines] + ['Warning (0.5)', 'Target (0.1)']
+            # ax2.legend(lines + [plt.Line2D([0], [0], color='red', linestyle=':'), plt.Line2D([0], [0], color='green', linestyle=':')], labels, loc='upper right')
         
         ax2.set_title('2. KL Divergence & Warmup Schedule', fontsize=12, fontweight='bold')
         ax2.grid(True, linestyle='--', alpha=0.5)

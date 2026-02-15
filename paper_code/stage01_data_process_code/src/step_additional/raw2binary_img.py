@@ -14,8 +14,8 @@ from tqdm import tqdm
 from skimage.restoration import denoise_nl_means, estimate_sigma
 
 # ================= 配置区域 =================
-INPUT_DIR = r"D:\多尺度岩心数据集\6-6-21"
-OUTPUT_DIR = r"D:\多尺度岩心数据集\6-6-21_Global_Consistency" # 输出目录改名
+INPUT_DIR = r"D:\多尺度岩心数据集\Lastest_Preprocess\Gray_Preprocessed_Slices\6-6-22"
+OUTPUT_DIR = r"D:\多尺度岩心数据集\Lastest_Preprocess\Binary_Preprocessed_Slices\6-6-22" # 输出目录改名
 FILE_EXT = "*.tif"
 
 CONFIG = {

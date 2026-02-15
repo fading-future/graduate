@@ -2,7 +2,7 @@ import os
 import glob
 import re
 import random
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -11,12 +11,17 @@ from torch.utils.data import Dataset
 from src.config import CONFIG
 
 
+Direction3D = Tuple[int, int, int]
+
+
 def _strip_porosity_prefix(name: str) -> str:
+    # 从文件名中提取孔隙率信息并返回去除孔隙率前缀后的名字
     # support: porosity_0.123456_xxx.npy -> xxx.npy
     return re.sub(r"^porosity_[0-9]*\\.?[0-9]+_", "", name)
 
 
 def _load_npy(path: str) -> np.ndarray:
+    # 安全加载npy文件，确保输出为float32类型
     return np.load(path).astype(np.float32)
 
 
@@ -28,22 +33,124 @@ def _repeat_phi(phi_patch: np.ndarray, patch_size: int) -> np.ndarray:
     return out
 
 
-def _is_prev(a: Tuple[int, int, int], b: Tuple[int, int, int], order: str) -> bool:
+def _pad_with_mode(x: np.ndarray, pad_width, mode: str) -> np.ndarray:
+    # numpy reflect mode requires pad < axis length; fallback to edge if invalid
+    if mode == "reflect":
+        for axis, (pad_before, pad_after) in enumerate(pad_width):
+            axis_len = x.shape[axis]
+            if axis_len <= 1 and (pad_before > 0 or pad_after > 0):
+                return np.pad(x, pad_width, mode="edge")
+            if pad_before >= axis_len or pad_after >= axis_len:
+                return np.pad(x, pad_width, mode="edge")
+    return np.pad(x, pad_width, mode=mode)
+
+
+def _normalize_order(order: str) -> str:
+    # 将顺序字符串标准化为 "ijk" 格式，默认返回 "ijk"
+    order = str(order).lower().strip()
+    if len(order) != 3 or set(order) != {"i", "j", "k"}:
+        return "ijk"
+    return order
+
+
+def _value_to_sign(v) -> int:
+    if isinstance(v, (int, np.integer, float, np.floating)):
+        return 1 if float(v) >= 0 else -1
+    txt = str(v).strip().lower()
+    if txt in ("+", "1", "+1", "pos", "forward", "fwd"):
+        return 1
+    if txt in ("-", "-1", "neg", "reverse", "rev", "backward", "bwd"):
+        return -1
+    return 1
+
+
+def _normalize_direction(direction) -> Direction3D:
+    # Accept forms like "+++", "+-+", "1,-1,1", [1,-1,1], ("+","-","+")
+    if isinstance(direction, str):
+        txt = direction.strip().lower().replace(" ", "")
+        if len(txt) == 3 and set(txt).issubset({"+", "-"}):
+            return tuple(1 if ch == "+" else -1 for ch in txt)  # type: ignore[return-value]
+        if "," in txt:
+            parts = txt.split(",")
+            if len(parts) == 3:
+                return tuple(_value_to_sign(p) for p in parts)  # type: ignore[return-value]
+        return (1, 1, 1)
+    if isinstance(direction, Sequence) and not isinstance(direction, (bytes, bytearray)):
+        parts = list(direction)
+        if len(parts) == 3:
+            return tuple(_value_to_sign(p) for p in parts)  # type: ignore[return-value]
+    return (1, 1, 1)
+
+
+def _normalize_context_mode(mode: str) -> str:
+    mode = str(mode).lower().strip()
+    if mode not in ("causal", "full", "wavefront"):
+        return "causal"
+    return mode
+
+
+def _normalize_pad_mode(mode: str) -> str:
+    mode = str(mode).lower().strip()
+    if mode not in ("constant", "edge", "reflect"):
+        return "edge"
+    return mode
+
+
+def _normalize_anchor_sampling_mode(mode: str) -> str:
+    mode = str(mode).lower().strip()
+    if mode not in ("uniform", "low_context_boost"):
+        return "uniform"
+    return mode
+
+
+def _is_prev_lexicographic(
+    a: Tuple[int, int, int],
+    b: Tuple[int, int, int],
+    order: str,
+    direction: Direction3D,
+) -> bool:
     ai, aj, ak = a
     bi, bj, bk = b
-    if order.lower() == "ijk":
-        if ai < bi:
+    axis_a = {"i": ai, "j": aj, "k": ak}
+    axis_b = {"i": bi, "j": bj, "k": bk}
+    axis_s = {"i": direction[0], "j": direction[1], "k": direction[2]}
+    for axis in _normalize_order(order):
+        va, vb = axis_a[axis] * axis_s[axis], axis_b[axis] * axis_s[axis]
+        if va < vb:
             return True
-        if ai == bi and aj < bj:
-            return True
-        if ai == bi and aj == bj and ak < bk:
-            return True
-        return False
-    # fallback: treat as full context
+        if va > vb:
+            return False
     return False
 
 
+def _is_prev_wavefront(
+    a: Tuple[int, int, int],
+    b: Tuple[int, int, int],
+    direction: Direction3D,
+) -> bool:
+    ai, aj, ak = a
+    bi, bj, bk = b
+    si, sj, sk = direction
+    cond_i = ai <= bi if si > 0 else ai >= bi
+    cond_j = aj <= bj if sj > 0 else aj >= bj
+    cond_k = ak <= bk if sk > 0 else ak >= bk
+    return (cond_i and cond_j and cond_k) and (a != b)
+
+
+def _is_prev_by_mode(
+    a: Tuple[int, int, int],
+    b: Tuple[int, int, int],
+    context_mode: str,
+    order: str,
+    direction: Direction3D,
+) -> bool:
+    if context_mode == "wavefront":
+        return _is_prev_wavefront(a, b, direction)
+    return _is_prev_lexicographic(a, b, order, direction)
+
+
 def _load_porosity_map(csv_path: str) -> dict:
+    # 从CSV文件中加载全局孔隙率映射，返回一个字典 {base_name: porosity}
     por_map = {}
     if not csv_path or not os.path.exists(csv_path):
         return por_map
@@ -66,7 +173,11 @@ def _load_porosity_map(csv_path: str) -> dict:
 
 
 class PatchLatentDataset(Dataset):
-    def __init__(self, latent_dir: str, phi_map_dir: str, augment: bool = True):
+    def __init__(self, 
+                 latent_dir: str,       # 被KLVAE 压缩的潜在空间文件夹路径
+                 phi_map_dir: str,      # latent对应的phi map文件夹路径
+                 augment: bool = True   # 是否进行数据增强（翻转）
+                 ):
         self.latent_dir = latent_dir
         self.phi_map_dir = phi_map_dir
         self.augment = augment
@@ -75,6 +186,7 @@ class PatchLatentDataset(Dataset):
         if len(files) == 0:
             raise ValueError(f"No .npy files found in {latent_dir}")
 
+        # pairs 中存储了：每一对数据的潜在空间文件路径、对应的phi map文件路径、以及去除孔隙率前缀后的基本文件名
         pairs: List[Tuple[str, str, str]] = []
         for fp in files:
             base = os.path.basename(fp)
@@ -95,48 +207,125 @@ class PatchLatentDataset(Dataset):
         self.safe_threshold = float(CONFIG.get("safe_threshold", 8.0))
         self.patch_size = int(CONFIG["patch_size"])
         self.window_size = int(CONFIG["window_size"])
-        self.context_mode = str(CONFIG.get("context_mode", "causal")).lower()
-        self.order = str(CONFIG.get("order", "ijk")).lower()
+        self.context_mode = _normalize_context_mode(CONFIG.get("context_mode", "causal"))
+        self.order = _normalize_order(CONFIG.get("order", "ijk"))
+        self.train_random_order = bool(CONFIG.get("train_random_order", False))
+        self.order_candidates = ["ijk", "ikj", "jik", "jki", "kij", "kji"]
+        self.train_random_direction = bool(CONFIG.get("train_random_direction", False))
+        self.train_direction = _normalize_direction(CONFIG.get("train_direction", "+++"))
+        self.anchor_sampling_mode = _normalize_anchor_sampling_mode(CONFIG.get("anchor_sampling_mode", "uniform"))
+        self.anchor_boost_power = float(CONFIG.get("anchor_boost_power", 1.0))
+        self.anchor_boost_min_weight = float(CONFIG.get("anchor_boost_min_weight", 0.05))
+        self.pad_mode = _normalize_pad_mode(CONFIG.get("pad_mode", "edge"))
         self.porosity_mode = str(CONFIG.get("porosity_mode", "local")).lower()
         self.porosity_map = _load_porosity_map(CONFIG.get("porosity_csv", ""))
 
     def __len__(self):
         return len(self.pairs)
 
-    def __getitem__(self, idx):
-        latent_path, phi_path, base_name = self.pairs[idx]
+    def _sample_order_for_item(self) -> str:
+        if self.context_mode != "causal":
+            return self.order
+        if not self.train_random_order:
+            return self.order
+        return random.choice(self.order_candidates)
 
-        z_full = _load_npy(latent_path)  # (C, D, H, W)
-        phi_map = _load_npy(phi_path)    # (gD, gH, gW)
+    def _sample_direction_for_item(self) -> Direction3D:
+        if self.context_mode not in ("causal", "wavefront"):
+            return self.train_direction
+        if not self.train_random_direction:
+            return self.train_direction
+        return (
+            random.choice((1, -1)),
+            random.choice((1, -1)),
+            random.choice((1, -1)),
+        )
+
+    def _sample_anchor(
+        self,
+        gD: int,
+        gH: int,
+        gW: int,
+        r: int,
+        order_used: str,
+        direction_used: Direction3D,
+    ) -> Tuple[int, int, int]:
+        if self.anchor_sampling_mode == "uniform":
+            return (
+                random.randint(0, gD - 1),
+                random.randint(0, gH - 1),
+                random.randint(0, gW - 1),
+            )
+
+        coords = [(i, j, k) for i in range(gD) for j in range(gH) for k in range(gW)]
+        weights: List[float] = []
+        pwr = max(self.anchor_boost_power, 0.0)
+        min_w = max(self.anchor_boost_min_weight, 0.0)
+
+        for ti, tj, tk in coords:
+            prev_count = 0
+            for gi in range(max(0, ti - r), min(gD, ti + r + 1)):
+                for gj in range(max(0, tj - r), min(gH, tj + r + 1)):
+                    for gk in range(max(0, tk - r), min(gW, tk + r + 1)):
+                        if gi == ti and gj == tj and gk == tk:
+                            continue
+                        if self.context_mode == "full":
+                            is_prev = True
+                        else:
+                            is_prev = _is_prev_by_mode(
+                                (gi, gj, gk),
+                                (ti, tj, tk),
+                                self.context_mode,
+                                order_used,
+                                direction_used,
+                            )
+                        if is_prev:
+                            prev_count += 1
+            w = 1.0 / ((prev_count + 1) ** pwr if pwr > 0 else 1.0)
+            weights.append(max(w, min_w))
+
+        pick = random.choices(coords, weights=weights, k=1)[0]
+        return int(pick[0]), int(pick[1]), int(pick[2])
+
+    def __getitem__(self, idx):
+        # 1. 加载Latent NPY和对应的Phi Map NPY，做数据预处理（scale + clamp）
+        latent_path, phi_path, base_name = self.pairs[idx]
+        z_full = _load_npy(latent_path)  # (C, D, H, W) -> 比如 (4, 24, 24, 24)
+        phi_map = _load_npy(phi_path)    # (gD, gH, gW) -> 比如 (3, 3, 3)
 
         if z_full.ndim == 5:
             z_full = z_full.squeeze(0)
 
-        # scale + clamp
+        # 数据预处理：scale + clamp
         z_full = z_full * self.scale_factor
         z_full = np.clip(z_full, -self.safe_threshold, self.safe_threshold)
 
         C, D, H, W = z_full.shape
         gD, gH, gW = phi_map.shape
 
+        # 2. 随机采样目标 (The Anchor)
         # sanity: derive grid from latent shape
-        p = self.patch_size
+        p = self.patch_size # latent voxels per patch，比如8，对应的原始体素数为 patch_size * downsample_factor
         exp_gD, exp_gH, exp_gW = D // p, H // p, W // p
         if (gD, gH, gW) != (exp_gD, exp_gH, exp_gW):
             raise ValueError(f"phi_map shape {phi_map.shape} != latent grid {(exp_gD, exp_gH, exp_gW)}")
 
-        # sample target patch index
-        ti = random.randint(0, gD - 1)
-        tj = random.randint(0, gH - 1)
-        tk = random.randint(0, gW - 1)
-
         w = self.window_size
         r = w // 2
+        order_used = self._sample_order_for_item()
+        direction_used = self._sample_direction_for_item()
 
-        # pad latent and phi to allow window at edges
+        # 采样得到目标patch的中心坐标（ti, tj, tk），范围在 [0, gD), [0, gH), [0, gW)
+        ti, tj, tk = self._sample_anchor(gD, gH, gW, r, order_used, direction_used)
+
+        # 窗口切片与填充 (Padding & Slicing)
         pad_p = r * p
-        z_pad = np.pad(z_full, ((0, 0), (pad_p, pad_p), (pad_p, pad_p), (pad_p, pad_p)), mode="constant")
-        phi_pad = np.pad(phi_map, ((r, r), (r, r), (r, r)), mode="constant")
+        z_pad = _pad_with_mode(
+            z_full,
+            ((0, 0), (pad_p, pad_p), (pad_p, pad_p), (pad_p, pad_p)),
+            self.pad_mode,
+        )
+        phi_pad = _pad_with_mode(phi_map, ((r, r), (r, r), (r, r)), self.pad_mode)
 
         ci, cj, ck = ti + r, tj + r, tk + r
 
@@ -153,7 +342,9 @@ class PatchLatentDataset(Dataset):
         zk0, zk1 = wk0 * p, wk1 * p
         z_win = z_pad[:, zi0:zi1, zj0:zj1, zk0:zk1]  # (C, w*p, w*p, w*p)
 
-        # build patch-level known mask
+        # 构建patch 级别的已知/未知掩码（mask_patch），以及对应的条件输入（cond）和孔隙率体积（phi_vol）
+        # 已知/未知定义：已知的patch是指在当前目标patch (ti,tj,tk) 的窗口范围内，且满足 context_mode 要求的patch。
+        # 已知为1，未知为0。
         mask_patch = np.zeros((w, w, w), dtype=np.float32)
         for di in range(w):
             for dj in range(w):
@@ -166,7 +357,13 @@ class PatchLatentDataset(Dataset):
                     if self.context_mode == "full":
                         known = not (gi == ti and gj == tj and gk == tk)
                     else:
-                        known = _is_prev((gi, gj, gk), (ti, tj, tk), self.order)
+                        known = _is_prev_by_mode(
+                            (gi, gj, gk),
+                            (ti, tj, tk),
+                            self.context_mode,
+                            order_used,
+                            direction_used,
+                        )
                     if known:
                         mask_patch[di, dj, dk] = 1.0
 

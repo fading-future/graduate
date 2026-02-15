@@ -1,0 +1,37 @@
+# config/train_config.yaml
+
+experiment:
+  exp_name: "exp04_cube_structure_v1"  # 修改这里开启新实验
+  exp_description: "稳健训练：长 KL warmup，判别器在 warmup 后开启，使用二值化之后的数据进行训练"
+  save_dir: "./experiments"
+
+data:
+  data_root: "D:\\多尺度岩心数据集\\Final_Result_Sorted" # 你的数据文件夹路径
+  file_extension: ".npy"               # 假设你的数据存为 npy，如果是 bin 请自行调整
+  image_size: 64
+  croped_size: 64                    # 请确认：如果想裁 128^3，改为 128，并调整 batch_size
+  channels: 1
+  num_workers: 12                      # 利用你的 96 核 CPU
+
+model:
+  base_channels: 64                    # 基础通道数，越大模型越宽，显存占用越高
+  ch_mult: [1, 2, 2, 4]                # 下采样倍率，256 -> 128 -> 64 -> 32 (Latent大小 32x32x32)
+  num_res_blocks: 3
+  z_channels: 4                        # Latent 的通道数 (最终压缩为 4x32x32x32)
+  dropout: 0.0
+  use_attn: true
+  
+loss:
+  kl_weight: 1e-6                  # KL 散度的权重，初期要小，避免后验坍塌
+  disc_weight: 0.0035                     # 对抗损失权重
+  disc_start: 20001                     # 多少步之后开启判别器 (Warmup)
+  kl_weight_max: 0.0001
+  kl_warmup_steps: 20000
+
+train:
+  seed: 42
+  batch_size: 8                        # A100 80G 上 256^3 数据，建议从 2 开始尝试，甚至可以试 4
+  epochs: 100
+  lr: 1.3e-4   # 4.5e-6 * batch_size? 通常 1e-4 是个好的起点
+  log_interval: 1                     # 多少个 batch 打印一次日志
+  save_interval: 1                     # 多少个 epoch 保存一次模型

@@ -1,36 +1,51 @@
 
 
-🎓毕业论文涉及到的所有代码和图件和说明信息都在这里
+毕业论文涉及到的所有代码、图件和说明信息都在这里
 
-【基于潜在扩散模型的岩心一致性条件扩展生成】
+🎓【基于潜在扩散模型的岩心一致性条件扩展生成】
+
+> *核心参考文献：`"E:\chendou\Ren 等 - 2024 - Constrained Transformer-Based Porous Media Generation to Spatial Distribution of Rock Properties.pdf"`*
 
 
 
-分为四个阶段来完成：
+
+
+# `paper_code` 代码使用指南
+
+## 1. 基本信息介绍
+
+`paper_code` 主要分为以下几个模块:
 
 1. `stage01_data_process_code` 数据处理部分
-2. `stage02_vqvae_code` `vqvae 模型`部分
-3. `stage03_latent_ddpm_code` `条件ddpm 模型`部分
-4. `stage04_result_analyze_code` 结果分析部分
+2. `stage02_KLvae_single_code_v2` 基于潜在扩散模型的第一阶段: KLVAE 模型
+3. `stage07_latent_ldm_code` 基于潜在扩散模型的第二阶段: LDM 模型
+4. `stage04_result_analyze_code` 结果分析部分. 论文中涉及到的绘图脚本基本都在这里
 
-整个项目存放在`chendou` 目录，通过`uv` 管理项目的python 版本、包版本、包依赖关系以及虚拟环境（不会`uv` 的话快去学习一下，好用，童叟无欺）。
+其余部分为尝试过的其他策略, 效果不理想. 这里做简要的介绍:
 
-*（学习`uv`。移步到 >>> Appendix.1）*
+- 尝试一: 基于像素空间的扩散模型的尝试. 在`stage03_pixelddpm_code` 中直接在像素空间做三面掩码策略训练条件扩散模型. 效果一般. 计算量大, 孔隙率条件没有很好的学习到. 弃用  
+- 尝试二: 基于潜空间扩散模型的尝试, 使用VQVAE 或者KLVAE 作为第一阶段模型, 在潜在空间做三面掩码策略训练LDM, 但是存在孔隙不联通, 生成的孔隙散碎的问题. 具体来说:在`stage02_vqvae_code` 中尝试使用VQVAE 作为潜在扩散模型的第一阶段, 使用`stage03_latent_ddpm_code` 条件ddpm 模型 作为潜在扩散模型的第二阶段.
+- 尝试三: 基于潜在扩散模型的尝试, 第一阶段与尝试二中保持一致, 但是在训练第二阶段的LDM 的时候, 针对数据集进行了改进, 具体见代码, 但是效果依旧很差
 
-`stage02_vqvae_code` 和 `stage03_latent_ddpm_code` 想要复现的话，需要比较高的算力。大概率组内现在最好的显卡还是A6000，大概率你也需要租用算力。
+以上的尝试均是在灰度NPY 数据上进行的. 并且针对灰度数据的分布, 掩码策略, VQVAE 死码问题, KLVAE 模糊问题等, 做了各种优化, 效果均一般. 因此后续参考 Ren 等人中使用VQVAE + Transformer 的自回归生成方式对代码进行了重构和优化, 确定了目前的:
 
-*（算力租用指南。移步到 >>> Appendix.3）*
+- 数据处理: 使用二值化之后的数据训练两阶段模型
+- 两阶段模型: 基于LDM 的自回归生成
+  - 第一阶段使用KLVAE 提到VQVAE 压缩数据, 因为KLVAE 产生的连续潜在空间更适合LDM 的训练. 
+  - 第二阶段使用LDM 做自回归生成, 摒弃了三面掩码策略的训练方式
 
 
 
-项目推荐启动方式：
+## 2. 如何训练运行
+
+整个项目存放在`chendou/paper_code` 目录，通过`uv` 管理项目的python 版本、包版本、包依赖关系以及虚拟环境*（学习`uv`。移步到 >>> Appendix.1）*
+
+代码推荐运行方式：
 
 1. 打开终端，进入到某个阶段的代码的根目录，比如我要运行`stage02_vqvae_code` 中的程序，那就需要控制台显示下面的路径`(chendou) PS E:\chendou\paper_code\stage02_vqvae_code> `  
-2. 在终端中，使用`python -m src.train` 命令来运行对应的python 代码。直接点击`vscode` 右上角的运行按钮会报错。
+2. 在终端中，使用`python -m src.train` 命令来运行对应的python 代码。直接点击`vscode` 右上角的运行按钮可能会报错。
 
-> （想省事就直接使用`-m` ，因为我的代码就是按照`-m` 运行不出错的逻辑写的）
->
-> （想要彻底搞懂到底有什么区别的话。*移步到 >>> Appendix.2*）
+> （python 中的不同启动方式有不同的作用. 想要搞懂到底有什么区别的话。*移步到 >>> Appendix.2*）
 >
 > **不同的程序启动方式，直接运行文件 vs 使用 `-m` 运行**
 >
@@ -38,6 +53,70 @@
 >    1. 普通的小脚本的常用运行方式，但是如果涉及到以及比较大的项目，会有坑。
 >    2. 当涉及到自己写的脚本之间需要互相导入的时候，直接运行文件会把**脚本所在的目录**（即 `.../stage02_vqvae_code/src`）加入到 `sys.path` 的第一个位置。结果就是脚本可以找到同级目录`src` 下的其他脚本，**但是**，脚本找不到上一层的 `utils` 目录！因为 `src` 是根，当前脚本它看不到外面。
 > 2. 使用`-m` 运行：只能在当前项目的根目录，使用`python 脚本相对于项目根目录的路径` 中间使用`.` 隔开，并且结尾不加`.py`
+
+
+
+### 步骤一: 准备数据
+
+> 1. 原始CT 数据信息: 移步到 >>> Appendix.6
+> 2. 基本上数据处理的代码都在`stage01_data_process_code` 中
+
+*⚠️数据处理流程: `原始CT 数据 ---> NLM 去噪之后的CT 数据 ---> 阈值分割之后的二值CT 数据 ---> 滑动窗口采样获取的NPY 数据 ---> KLVAE 压缩之后的Latent NPY 数据 ---> 训练LDM 所需要的Pairs NPY 数据`* 
+
+具体介绍:
+
+1️⃣ NLM 去噪之后的 CT 数据:
+
+- 获取方式: 运行`E:\chendou\paper_code\stage01_data_process_code\src\step_additional\grayimg2peak2nlmimg.py` 
+- 输入数据: 原始的CT 数据
+- 输出路径: `D:\多尺度岩心数据集\Lastest_Preprocess\Gray_Preprocessed_Slices`
+
+2️⃣ 阈值分割之后的二值CT 数据:
+
+- 获取方式: 运行`E:\chendou\paper_code\stage01_data_process_code\src\step_additional\preprocessed2binary.py`
+- 输入数据: NLM 去噪之后的CT 数据
+- 输出路径: `D:\多尺度岩心数据集\Lastest_Preprocess\Binary_Preprocessed_Slices`
+
+3️⃣ 滑动窗口采样获取的NPY 数据:
+
+- 获取方式: 运行`E:\chendou\paper_code\stage01_data_process_code\src\step_additional\binaryct2npy.py`
+- 输入数据: 阈值分割之后的二值CT 数据
+- 输出路径: `D:\多尺度岩心数据集\LDM_Data\Raw_NPY\w192_s64`
+
+4️⃣ KLVAE 压缩之后的Latent NPY 数据:
+
+- 获取方式: 运行`E:\chendou\paper_code\stage02_KLvae_single_code_v2\inference.py`
+- 输入数据:滑动窗口采样获取的NPY 数据
+- 输出路径: `D:\多尺度岩心数据集\LDM_Data\Latent_NPY\w192_s64`
+
+5️⃣ 训练LDM 所需要的Pairs NPY 数据之一的Phi Maps NPY 数据:
+
+- 获取方式: 运行`E:\chendou\paper_code\stage07_latent_ldm_code\src\preprocess_phi.py`
+- 输入数据: 滑动窗口采样获取的NPY 数据
+- 输出路径: `D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64` 
+
+
+
+### 步骤二: 训练KLVAE
+
+``````bash
+# 方式一: 重新开启一个新的训练
+(chendou) PS E:\chendou\paper_code\stage02_KLvae_single_code_v2> python -m train
+
+# 方式二: 从某个模型参数开始继续训练
+(chendou) PS E:\chendou\paper_code\stage02_KLvae_single_code_v2> python -m train --config config/train_config.yaml --resume ./experiments/exp05_cube_structure_v2/ckpt_epoch_11.pt
+``````
+
+
+
+### 步骤三: 训练LDM
+
+```````bash
+# 开启一个新的训练 or 从最新的模型参数开始继续训练
+(chendou) PS E:\chendou\paper_code\stage07_latent_ldm_code> python -m src.train
+```````
+
+
 
 
 
@@ -137,6 +216,29 @@ E:.
 ## 5. 远程连接Windows 或者Ubuntu
 
 
+
+
+
+## 6. 原始数据介绍
+
+```
+目录					深度(m)			总长度(cm)			直径(mm)		图片数量
+D:\多尺度岩心数据集	
+├─6-6-9				26.5				55.03			100				11701
+├─6-6-12			35.5				37				100				7612	
+├─6-6-15			46					67				100				12726
+├─6-6-18			57.5				37.5			75				8173
+├─6-6-20 全部			70					31.5			50				7921
+├─6-6-21			74					39.6			50				7892
+├─6-6-22			83					29.5			50				6237
+├─6-6-23			90					37				50				9219
+└─6-6-24			97					13				50				3060
+```
+
+1. 以上数据的分辨率均为 56 $\mu m$ , 图片的尺寸均为 $1900 \times 1900$
+2. 图片的边缘存在伪影
+3. 整个岩心柱不是标准的圆柱体，存在破碎和残缺
+4. 深度 26.5-97m, 图片总计数量约7w 张
 
 # Error(踩坑指南)
 ## 1. `import torch` 导入出错
