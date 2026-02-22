@@ -27,3 +27,7 @@ pytorch_pkgs
 
 # mac 电脑的隐藏文件
 .DS_Store
+
+# 网格搜索结果
+**search_stageB/
+**search_stageA/

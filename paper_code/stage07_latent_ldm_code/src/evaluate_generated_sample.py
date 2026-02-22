@@ -164,13 +164,36 @@ def compute_phi_map(vol: np.ndarray, patch_voxel: int) -> np.ndarray:
     return phi
 
 
-def save_slices_single(vol3d: np.ndarray, out_path: str, title: str, cmap: str = "gray", vmin=None, vmax=None):
+def _draw_patch_grid(ax, img2d: np.ndarray, patch_step: int, color: str, linewidth: float, alpha: float):
+    if patch_step is None or patch_step <= 0:
+        return
+    h, w = img2d.shape
+    # Draw boundaries between stitched patches.
+    for x in range(patch_step, w, patch_step):
+        ax.axvline(x - 0.5, color=color, linewidth=linewidth, alpha=alpha)
+    for y in range(patch_step, h, patch_step):
+        ax.axhline(y - 0.5, color=color, linewidth=linewidth, alpha=alpha)
+
+
+def save_slices_single(
+    vol3d: np.ndarray,
+    out_path: str,
+    title: str,
+    cmap: str = "gray",
+    vmin=None,
+    vmax=None,
+    patch_grid_step: int = 0,
+    grid_color: str = "red",
+    grid_linewidth: float = 0.8,
+    grid_alpha: float = 0.75,
+):
     d, h, w = vol3d.shape
     cz, cy, cx = d // 2, h // 2, w // 2
     slices = [vol3d[cz], vol3d[:, cy, :], vol3d[:, :, cx]]
     fig, axes = plt.subplots(1, 3, figsize=(9, 3))
     for i, ax in enumerate(axes):
         ax.imshow(slices[i], cmap=cmap, vmin=vmin, vmax=vmax)
+        _draw_patch_grid(ax, slices[i], patch_grid_step, grid_color, grid_linewidth, grid_alpha)
         ax.axis("off")
     fig.suptitle(title, fontsize=10)
     plt.tight_layout()
@@ -178,7 +201,19 @@ def save_slices_single(vol3d: np.ndarray, out_path: str, title: str, cmap: str =
     plt.close(fig)
 
 
-def save_slices_pair(pred3d: np.ndarray, gt3d: np.ndarray, out_path: str, title: str, cmap: str = "gray", vmin=None, vmax=None):
+def save_slices_pair(
+    pred3d: np.ndarray,
+    gt3d: np.ndarray,
+    out_path: str,
+    title: str,
+    cmap: str = "gray",
+    vmin=None,
+    vmax=None,
+    patch_grid_step: int = 0,
+    grid_color: str = "red",
+    grid_linewidth: float = 0.8,
+    grid_alpha: float = 0.75,
+):
     d, h, w = pred3d.shape
     cz, cy, cx = d // 2, h // 2, w // 2
     pred_slices = [pred3d[cz], pred3d[:, cy, :], pred3d[:, :, cx]]
@@ -187,8 +222,10 @@ def save_slices_pair(pred3d: np.ndarray, gt3d: np.ndarray, out_path: str, title:
     fig, axes = plt.subplots(2, 3, figsize=(9, 6))
     for i in range(3):
         axes[0, i].imshow(pred_slices[i], cmap=cmap, vmin=vmin, vmax=vmax)
+        _draw_patch_grid(axes[0, i], pred_slices[i], patch_grid_step, grid_color, grid_linewidth, grid_alpha)
         axes[0, i].axis("off")
         axes[1, i].imshow(gt_slices[i], cmap=cmap, vmin=vmin, vmax=vmax)
+        _draw_patch_grid(axes[1, i], gt_slices[i], patch_grid_step, grid_color, grid_linewidth, grid_alpha)
         axes[1, i].axis("off")
     axes[0, 0].set_title("Pred", fontsize=10)
     axes[1, 0].set_title("GT", fontsize=10)
@@ -233,6 +270,7 @@ def main():
 
     NPY_NAME = CONFIG.get("phi_map_path", "").split("\\")[-1].split(".npy")[0]
     EPOCH = CONFIG.get("ckpt_path", "unknown").split("_epoch_")[-1].split(".pth")[0]
+    IS_EMA = "ema" if CONFIG.get("infer_use_ema", True) == True else "normal"
     print(f"Evaluating sample {NPY_NAME} from epoch {EPOCH}...")
 
     parser = argparse.ArgumentParser(description="Evaluate one generated latent sample against GT (if available).")
@@ -250,7 +288,12 @@ def main():
     parser.add_argument("--gt-latent-scaled", action="store_true", default=False)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--out-dir", default=str(repo_root / f"eval_generated_{EPOCH}_{NPY_NAME}"))
+    parser.add_argument("--out-dir", default=str(repo_root / f"eval_{IS_EMA}_{EPOCH}_{NPY_NAME}"))
+    parser.add_argument("--show-patch-grid", action="store_true", help="Overlay patch stitching boundaries on slice images.")
+    parser.add_argument("--grid-step-voxel", type=int, default=0, help="Patch boundary spacing in voxel pixels. <=0 uses patch_size*downsample_factor.")
+    parser.add_argument("--grid-color", default="red")
+    parser.add_argument("--grid-linewidth", type=float, default=0.8)
+    parser.add_argument("--grid-alpha", type=float, default=0.75)
     args = parser.parse_args()
 
     out_dir = resolve_path(args.out_dir, repo_root)
@@ -289,6 +332,8 @@ def main():
 
     device = torch.device(args.device)
     sf = args.scale_factor if args.scale_factor != 0.0 else 1.0
+    patch_voxel = int(CONFIG.get("patch_size", 8)) * int(CONFIG.get("downsample_factor", 8))
+    grid_step_voxel = int(args.grid_step_voxel) if int(args.grid_step_voxel) > 0 else patch_voxel
 
     pred_lat = load_latent(pred_latent_path)
     pred_lat_unscaled = pred_lat / sf if args.pred_latent_scaled else pred_lat
@@ -333,8 +378,30 @@ def main():
     pred_prob, pred_bin = decode_to_prob_and_bin(pred_lat_unscaled, vae, device, args.threshold)
     np.save(os.path.join(out_dir, "pred_voxel_prob.npy"), pred_prob)
     np.save(os.path.join(out_dir, "pred_voxel_bin.npy"), pred_bin)
-    save_slices_single(pred_prob, os.path.join(out_dir, "pred_voxel_prob.png"), "Pred voxel probability", cmap="gray", vmin=0.0, vmax=1.0)
-    save_slices_single(pred_bin, os.path.join(out_dir, "pred_voxel_bin.png"), "Pred voxel binary", cmap="gray", vmin=0.0, vmax=1.0)
+    save_slices_single(
+        pred_prob,
+        os.path.join(out_dir, "pred_voxel_prob.png"),
+        "Pred voxel probability",
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        patch_grid_step=grid_step_voxel if args.show_patch_grid else 0,
+        grid_color=args.grid_color,
+        grid_linewidth=args.grid_linewidth,
+        grid_alpha=args.grid_alpha,
+    )
+    save_slices_single(
+        pred_bin,
+        os.path.join(out_dir, "pred_voxel_bin.png"),
+        "Pred voxel binary",
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        patch_grid_step=grid_step_voxel if args.show_patch_grid else 0,
+        grid_color=args.grid_color,
+        grid_linewidth=args.grid_linewidth,
+        grid_alpha=args.grid_alpha,
+    )
 
     # voxel GT metrics
     gt_bin = None
@@ -352,6 +419,10 @@ def main():
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
+            patch_grid_step=grid_step_voxel if args.show_patch_grid else 0,
+            grid_color=args.grid_color,
+            grid_linewidth=args.grid_linewidth,
+            grid_alpha=args.grid_alpha,
         )
         save_slices_pair(
             pred_prob_al,
@@ -361,10 +432,13 @@ def main():
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
+            patch_grid_step=grid_step_voxel if args.show_patch_grid else 0,
+            grid_color=args.grid_color,
+            grid_linewidth=args.grid_linewidth,
+            grid_alpha=args.grid_alpha,
         )
 
     # phi consistency
-    patch_voxel = int(CONFIG.get("patch_size", 8)) * int(CONFIG.get("downsample_factor", 8))
     pred_phi_bin = compute_phi_map(pred_bin.astype(np.float32), patch_voxel)
     pred_phi_prob = compute_phi_map(pred_prob.astype(np.float32), patch_voxel)
     np.save(os.path.join(out_dir, "pred_phi_from_bin.npy"), pred_phi_bin)

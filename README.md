@@ -14,6 +14,59 @@
 
 ## 1. 基本信息介绍
 
+``````
+E:\chendou\paper_code> tree /F
+E:.
+├─stage01_data_process_code
+│  │  README.md
+│  └─src
+│      ├─step1
+│      │      ctimg2npy_v1.py
+│      │      ctimg2npy_v2.py   
+│      ├─step2
+│      │      calc_porosity.py  
+│      └─visualization
+│          │  step1_visual_v1.py
+│          │  step1_visual_v2.py
+│          │  step2_visual.py
+│          │  
+│          └─img_data
+│                  Step1_Fig_Data_Construction.png
+│                  Step1_Thesis_Figure_MethodNoise.png
+│                  Step2_Figure_1_Distribution_Wide.png
+│                  Step2_Figure_2_Processing_Flow_Reordered.png
+├─stage02_vqvae_code
+│  │  README.md
+│  ├─exp_results
+│  │  └─exp01
+│  │      ├─log
+│  │      │      training_curve_paper.png
+│  │      │      viz_epoch_110.png
+│  │      └─model
+│  │              vqvae_epoch_110.pth
+│  ├─src
+│  │      config.py
+│  │      dataset_rev.py
+│  │      model_vqvae.py
+│  │      train_vqvae.py
+│  └─utils
+│          get_root_path.py
+├─stage03_latent_ddpm_code
+│  ├─exp_results
+│  │  └─exp01
+│  │      ├─log
+│  │      └─model
+│  ├─src
+│  └─utils
+├─stage04_result_analyze_code
+└─utils
+        check_visual_npy_stats.py
+        prepare_latent_npy.py
+        visual_rev_npy_threeFacets.py
+``````
+
+
+
 `paper_code` 主要分为以下几个模块:
 
 1. `stage01_data_process_code` 数据处理部分
@@ -145,62 +198,6 @@
 3. python 脚本中到底怎么获取路径信息？工作目录和绝对路径有什么区别呢？
 4. 上面三个问题是怎么耦合在一起，相互影响的呢？
 5. 其他编程语言`Java, Golang` 怎么做的？为什么没有这些问题？
-
-
-
-
-
-```
-E:\chendou\paper_code> tree /F
-E:.
-├─stage01_data_process_code
-│  │  README.md
-│  └─src
-│      ├─step1
-│      │      ctimg2npy_v1.py
-│      │      ctimg2npy_v2.py   
-│      ├─step2
-│      │      calc_porosity.py  
-│      └─visualization
-│          │  step1_visual_v1.py
-│          │  step1_visual_v2.py
-│          │  step2_visual.py
-│          │  
-│          └─img_data
-│                  Step1_Fig_Data_Construction.png
-│                  Step1_Thesis_Figure_MethodNoise.png
-│                  Step2_Figure_1_Distribution_Wide.png
-│                  Step2_Figure_2_Processing_Flow_Reordered.png
-├─stage02_vqvae_code
-│  │  README.md
-│  ├─exp_results
-│  │  └─exp01
-│  │      ├─log
-│  │      │      training_curve_paper.png
-│  │      │      viz_epoch_110.png
-│  │      └─model
-│  │              vqvae_epoch_110.pth
-│  ├─src
-│  │      config.py
-│  │      dataset_rev.py
-│  │      model_vqvae.py
-│  │      train_vqvae.py
-│  └─utils
-│          get_root_path.py
-├─stage03_latent_ddpm_code
-│  ├─exp_results
-│  │  └─exp01
-│  │      ├─log
-│  │      └─model
-│  ├─src
-│  └─utils
-├─stage04_result_analyze_code
-└─utils
-        check_visual_npy_stats.py
-        prepare_latent_npy.py
-        visual_rev_npy_threeFacets.py
-
-```
 
 
 

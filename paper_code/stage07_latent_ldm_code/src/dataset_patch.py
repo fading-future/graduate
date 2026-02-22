@@ -103,6 +103,15 @@ def _normalize_anchor_sampling_mode(mode: str) -> str:
     return mode
 
 
+def _normalize_sampler_semantic(semantic: str) -> str:
+    s = str(semantic).lower().strip()
+    if s in ("pore", "porosity", "pore_rate"):
+        return "pore"
+    if s in ("rock", "rock_rate", "phi"):
+        return "rock_rate"
+    return "pore"
+
+
 def _is_prev_lexicographic(
     a: Tuple[int, int, int],
     b: Tuple[int, int, int],
@@ -218,7 +227,71 @@ class PatchLatentDataset(Dataset):
         self.anchor_boost_min_weight = float(CONFIG.get("anchor_boost_min_weight", 0.05))
         self.pad_mode = _normalize_pad_mode(CONFIG.get("pad_mode", "edge"))
         self.porosity_mode = str(CONFIG.get("porosity_mode", "local")).lower()
+        self.porosity_mix_alpha = float(CONFIG.get("porosity_mix_alpha", 0.7))
+        self.use_global_phi_channel = bool(CONFIG.get("use_global_phi_channel", False))
         self.porosity_map = _load_porosity_map(CONFIG.get("porosity_csv", ""))
+        self.porosity_sampler_semantic = _normalize_sampler_semantic(
+            CONFIG.get("porosity_sampler_semantic", "pore")
+        )
+        self.sample_phi_means = None
+        self._last_sampler_stats = {}
+
+    def _get_sample_phi_means(self) -> np.ndarray:
+        if self.sample_phi_means is not None:
+            return self.sample_phi_means
+        vals: List[float] = []
+        for _, phi_path, _ in self.pairs:
+            phi = _load_npy(phi_path)
+            vals.append(float(phi.mean()))
+        self.sample_phi_means = np.array(vals, dtype=np.float32)
+        return self.sample_phi_means
+
+    def build_porosity_sampling_weights(
+        self,
+        bin_edges: List[float],
+        power: float = 1.0,
+        min_weight: float = 0.1,
+        max_weight: float = 10.0,
+    ) -> np.ndarray:
+        vals = self._get_sample_phi_means().astype(np.float64)
+        if self.porosity_sampler_semantic == "pore":
+            vals = 1.0 - vals
+        vals = np.clip(vals, 0.0, 1.0)
+        if len(bin_edges) < 2:
+            raise ValueError("porosity bin_edges must contain at least 2 values.")
+        edges = np.array(bin_edges, dtype=np.float64)
+        if not np.all(np.diff(edges) > 0):
+            raise ValueError("porosity bin_edges must be strictly increasing.")
+
+        # bin_id in [0, num_bins-1]
+        bin_ids = np.digitize(vals, edges[1:-1], right=False)
+        num_bins = len(edges) - 1
+        counts = np.bincount(bin_ids, minlength=num_bins).astype(np.float64)
+
+        inv = np.zeros_like(counts)
+        nz = counts > 0
+        inv[nz] = 1.0 / counts[nz]
+        inv = np.power(inv, max(power, 0.0))
+        sample_w = inv[bin_ids]
+
+        # normalize around 1.0 for stable gradients
+        mean_w = float(sample_w.mean()) if sample_w.size > 0 else 1.0
+        if mean_w > 0:
+            sample_w = sample_w / mean_w
+        sample_w = np.clip(sample_w, max(min_weight, 1e-6), max(max_weight, min_weight))
+
+        self._last_sampler_stats = {
+            "semantic": self.porosity_sampler_semantic,
+            "bin_edges": edges.tolist(),
+            "bin_counts": counts.tolist(),
+            "value_min": float(vals.min()) if vals.size > 0 else 0.0,
+            "value_max": float(vals.max()) if vals.size > 0 else 0.0,
+            "value_mean": float(vals.mean()) if vals.size > 0 else 0.0,
+            "weight_min": float(sample_w.min()) if sample_w.size > 0 else 0.0,
+            "weight_max": float(sample_w.max()) if sample_w.size > 0 else 0.0,
+            "weight_mean": float(sample_w.mean()) if sample_w.size > 0 else 0.0,
+        }
+        return sample_w.astype(np.float64)
 
     def __len__(self):
         return len(self.pairs)
@@ -374,14 +447,25 @@ class PatchLatentDataset(Dataset):
         target_mask = _repeat_phi(target_patch, p)[None, ...]
 
         cond = z_win * mask
-        phi_vol = _repeat_phi(phi_win, p)[None, ...]
-        if self.porosity_mode == "global":
-            por = self.porosity_map.get(base_name, None)
-            if por is None:
-                por = float(phi_map.mean())
-            porosity = np.array([por], dtype=np.float32)
+        local_phi_val = float(phi_map[ti, tj, tk])
+        global_phi_val = float(phi_map.mean())
+
+        local_phi_vol = _repeat_phi(phi_win, p)
+        if self.use_global_phi_channel:
+            global_phi_patch = np.full_like(phi_win, global_phi_val, dtype=np.float32)
+            global_phi_vol = _repeat_phi(global_phi_patch, p)
+            phi_vol = np.stack([local_phi_vol, global_phi_vol], axis=0)
         else:
-            porosity = np.array([phi_map[ti, tj, tk]], dtype=np.float32)
+            phi_vol = local_phi_vol[None, ...]
+
+        if self.porosity_mode == "global":
+            por = self.porosity_map.get(base_name, global_phi_val)
+        elif self.porosity_mode in ("mix", "local_global_mix"):
+            a = float(np.clip(self.porosity_mix_alpha, 0.0, 1.0))
+            por = a * local_phi_val + (1.0 - a) * global_phi_val
+        else:
+            por = local_phi_val
+        porosity = np.array([por], dtype=np.float32)
 
         # augment (flip)
         if self.augment:

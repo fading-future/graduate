@@ -34,6 +34,20 @@ def _normalize_order(order: str) -> str:
     return order
 
 
+def _phi_channels() -> int:
+    return 2 if bool(CONFIG.get("use_global_phi_channel", False)) else 1
+
+
+def _resolve_in_channels() -> int:
+    # model input = x_t(C) + cond(C) + mask(1) + phi(phi_channels)
+    c = int(CONFIG.get("out_channels", CONFIG.get("latent_channels", 4)))
+    expected = 2 * c + 1 + _phi_channels()
+    cfg_in = int(CONFIG.get("in_channels", expected))
+    if cfg_in != expected:
+        print(f"[warn] CONFIG['in_channels']={cfg_in} != expected={expected}; using expected.")
+    return expected
+
+
 def _value_to_sign(v) -> int:
     if isinstance(v, (int, np.integer, float, np.floating)):
         return 1 if float(v) >= 0 else -1
@@ -194,7 +208,7 @@ def _seeded_randn_like(x: torch.Tensor, seed):
 
 def load_model(ckpt_path: str, device: torch.device):
     model = ConditionalLatentUNet(
-        in_channels=CONFIG["in_channels"],
+        in_channels=_resolve_in_channels(),
         out_channels=CONFIG["out_channels"],
         base_channels=CONFIG["base_channels"],
         channel_mults=CONFIG["channel_mults"],
@@ -370,6 +384,7 @@ def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, wind
 
     phi_pad = _pad_with_mode(phi_map, ((r, r), (r, r), (r, r)), pad_mode)
     pad_p = r * patch_size
+    global_phi_val = float(phi_map.mean())
 
     batches = _build_generation_batches(
         gD=gD,
@@ -432,12 +447,23 @@ def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, wind
 
             mask = _repeat_phi(mask_patch, patch_size)[None, ...]
             cond = z_win * mask
-            phi_vol = _repeat_phi(phi_win, patch_size)[None, ...]
-
-            if str(CONFIG.get("porosity_mode", "local")).lower() == "global":
-                porosity = float(phi_map.mean())
+            local_phi_vol = _repeat_phi(phi_win, patch_size)
+            if _phi_channels() >= 2:
+                global_phi_patch = np.full_like(phi_win, global_phi_val, dtype=np.float32)
+                global_phi_vol = _repeat_phi(global_phi_patch, patch_size)
+                phi_vol = np.stack([local_phi_vol, global_phi_vol], axis=0)
             else:
-                porosity = float(phi_map[i, j, k])
+                phi_vol = local_phi_vol[None, ...]
+
+            por_mode = str(CONFIG.get("porosity_mode", "local")).lower()
+            local_phi_val = float(phi_map[i, j, k])
+            if por_mode == "global":
+                porosity = global_phi_val
+            elif por_mode in ("mix", "local_global_mix"):
+                a = float(np.clip(CONFIG.get("porosity_mix_alpha", 0.7), 0.0, 1.0))
+                porosity = a * local_phi_val + (1.0 - a) * global_phi_val
+            else:
+                porosity = local_phi_val
 
             cond_batch.append(cond)
             mask_batch.append(mask)

@@ -2,10 +2,10 @@ import os
 import csv
 import json
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.amp import autocast, GradScaler
@@ -76,7 +76,47 @@ def setup_experiment():
             writer = csv.writer(f)
             writer.writerow(["Epoch", "Step", "Loss", "LR", "DiffTarget", "X0Target"])
 
-    return exp_dir, model_dir, log_dir, csv_path
+    csv_detail_path = os.path.join(log_dir, "training_log_detailed.csv")
+    if not os.path.exists(csv_detail_path):
+        with open(csv_detail_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "Epoch",
+                    "Step",
+                    "Loss",
+                    "LR",
+                    "DiffTarget",
+                    "X0Target",
+                    "StatsTarget",
+                    "PhiDecode",
+                    "PhiProxy",
+                    "PhiDecodeWeighted",
+                    "PhiProxyWeighted",
+                    "PhiDecodeApplied",
+                    "PhiConsistencyWeight",
+                    "PhiProxyWeight",
+                    "PhiLossEverySteps",
+                    "PhiLossMaxBatch",
+                    "PhiTargetMean",
+                ]
+            )
+
+    return exp_dir, model_dir, log_dir, csv_path, csv_detail_path
+
+
+def _phi_channels() -> int:
+    return 2 if bool(CONFIG.get("use_global_phi_channel", False)) else 1
+
+
+def _resolve_in_channels() -> int:
+    # model input = x_t(C) + cond(C) + mask(1) + phi(phi_channels)
+    c = int(CONFIG.get("out_channels", CONFIG.get("latent_channels", 4)))
+    expected = 2 * c + 1 + _phi_channels()
+    cfg_in = int(CONFIG.get("in_channels", expected))
+    if cfg_in != expected:
+        print(f"[warn] CONFIG['in_channels']={cfg_in} != expected={expected}; using expected.")
+    return expected
 
 
 def load_latest_checkpoint(model_dir, device):
@@ -144,6 +184,53 @@ def _load_klvae(cfg_path: str, ckpt_path: str, device: torch.device):
     vae.load_state_dict(new_state)
     vae.eval()
     return vae
+
+
+def _latent_phi_proxy_loss(
+    pred_center: torch.Tensor,
+    gt_center: torch.Tensor,
+    phi_local_target: torch.Tensor,
+    ridge: float = 1e-4,
+) -> torch.Tensor:
+    """
+    Lightweight porosity proxy loss in latent space.
+
+    Fit a tiny linear probe (closed-form ridge regression) from GT latent features
+    to local target phi in current batch, then enforce prediction features to match.
+    This avoids VAE decode in training loop.
+    """
+    # Ensure linear algebra stays in fp32 and bypasses outer autocast.
+    if pred_center.device.type == "cuda":
+        amp_off = torch.amp.autocast("cuda", enabled=False)
+    elif pred_center.device.type == "cpu":
+        amp_off = torch.amp.autocast("cpu", enabled=False)
+    else:
+        amp_off = nullcontext()
+
+    with amp_off:
+        feat_gt = gt_center.mean(dim=(2, 3, 4)).detach().to(torch.float32)   # (B, C)
+        feat_pred = pred_center.mean(dim=(2, 3, 4)).to(torch.float32)        # (B, C), keeps grad
+        y = phi_local_target.view(-1, 1).detach().to(torch.float32)          # (B, 1)
+
+        B = feat_gt.shape[0]
+        ones = torch.ones((B, 1), device=feat_gt.device, dtype=torch.float32)
+        X = torch.cat([feat_gt, ones], dim=1)                   # (B, C+1)
+        X_pred = torch.cat([feat_pred, ones], dim=1)            # (B, C+1)
+
+        with torch.no_grad():
+            xtx = (X.T @ X).to(torch.float32)
+            xty = (X.T @ y).to(torch.float32)
+            d = xtx.shape[0]
+            reg = torch.eye(d, device=xtx.device, dtype=torch.float32) * float(max(ridge, 0.0))
+            A = xtx + reg
+            try:
+                w = torch.linalg.solve(A, xty)      # (C+1, 1)
+            except (RuntimeError, NotImplementedError):
+                w = torch.linalg.pinv(A) @ xty
+
+        pred_phi_proxy = (X_pred @ w).squeeze(1).clamp(0.0, 1.0)
+        target = phi_local_target.view(-1).to(torch.float32)
+        return torch.abs(pred_phi_proxy - target).mean()
 
 
 def run_eval_step(model, diffusion, device, step, exp_dir):
@@ -236,19 +323,55 @@ def run_eval_step(model, diffusion, device, step, exp_dir):
 
 def main():
     device = torch.device(CONFIG["device"])
-    exp_dir, model_dir, log_dir, csv_path = setup_experiment()
+    exp_dir, model_dir, log_dir, csv_path, csv_detail_path = setup_experiment()
 
     dataset = PatchLatentDataset(CONFIG["latent_dir"], CONFIG["phi_map_dir"], augment=True)
+    sampler = None
+    shuffle = True
+    if bool(CONFIG.get("use_porosity_weighted_sampler", False)):
+        bin_edges = list(CONFIG.get("porosity_bin_edges", [0.0, 0.75, 0.9, 0.96, 0.985, 1.01]))
+        power = float(CONFIG.get("porosity_sampler_power", 1.0))
+        min_w = float(CONFIG.get("porosity_sampler_min_weight", 0.2))
+        max_w = float(CONFIG.get("porosity_sampler_max_weight", 5.0))
+        sample_w = dataset.build_porosity_sampling_weights(
+            bin_edges=bin_edges,
+            power=power,
+            min_weight=min_w,
+            max_weight=max_w,
+        )
+        sampler = WeightedRandomSampler(
+            weights=torch.from_numpy(sample_w).double(),
+            num_samples=len(sample_w),
+            replacement=True,
+        )
+        shuffle = False
+        stats = getattr(dataset, "_last_sampler_stats", {})
+        if stats:
+            print(f"[sampler] semantic={stats.get('semantic', 'pore')}")
+            print(f"[sampler] bin_edges={stats.get('bin_edges')}")
+            print(f"[sampler] bin_counts={stats.get('bin_counts')}")
+            print(
+                "[sampler] value range="
+                f"[{stats.get('value_min', 0.0):.4f}, {stats.get('value_max', 0.0):.4f}], "
+                f"mean={stats.get('value_mean', 0.0):.4f}"
+            )
+            print(
+                "[sampler] weight range="
+                f"[{stats.get('weight_min', 0.0):.4f}, {stats.get('weight_max', 0.0):.4f}], "
+                f"mean={stats.get('weight_mean', 0.0):.4f}"
+            )
+
     dataloader = DataLoader(
         dataset,
         batch_size=CONFIG["batch_size"],
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=CONFIG["num_workers"],
         pin_memory=CONFIG.get("pin_memory", True),
     )
 
     model = ConditionalLatentUNet(
-        in_channels=CONFIG["in_channels"],
+        in_channels=_resolve_in_channels(),
         out_channels=CONFIG["out_channels"],
         base_channels=CONFIG["base_channels"],
         channel_mults=CONFIG["channel_mults"],
@@ -290,9 +413,41 @@ def main():
     x0_w = float(CONFIG.get("x0_weight", 0.2))
     use_target_stats_loss = bool(CONFIG.get("use_target_stats_loss", False))
     target_stats_weight = float(CONFIG.get("target_stats_weight", 0.0))
+    use_phi_consistency_loss = bool(CONFIG.get("use_phi_consistency_loss", False))
+    phi_consistency_weight = float(CONFIG.get("phi_consistency_weight", 0.0))
+    phi_loss_every_steps = max(1, int(CONFIG.get("phi_loss_every_steps", 1)))
+    phi_loss_max_batch = int(CONFIG.get("phi_loss_max_batch", 0))
+    use_phi_proxy_loss = bool(CONFIG.get("use_phi_proxy_loss", False))
+    phi_proxy_weight = float(CONFIG.get("phi_proxy_weight", 0.0))
+    phi_proxy_ridge = float(CONFIG.get("phi_proxy_ridge", 1e-4))
     band_w = int(CONFIG.get("boundary_band_width", 0))
     band_weight = float(CONFIG.get("boundary_band_weight", 0.0))
     safe_thresh = float(CONFIG.get("safe_threshold", 8.0))
+    patch_size = int(CONFIG.get("patch_size", 8))
+    window_size = int(CONFIG.get("window_size", 3))
+    center_start = (window_size // 2) * patch_size
+    center_end = center_start + patch_size
+
+    print(
+        "[phi] settings: "
+        f"consistency_weight={phi_consistency_weight}, "
+        f"proxy_weight={phi_proxy_weight}, "
+        f"loss_every_steps={phi_loss_every_steps}, "
+        f"loss_max_batch={phi_loss_max_batch}"
+    )
+
+    vae_phi = None
+    if use_phi_consistency_loss and phi_consistency_weight > 0.0:
+        vae_cfg = CONFIG.get("eval_vae_config_path", "")
+        vae_ckpt = CONFIG.get("eval_vae_ckpt_path", "")
+        vae_phi = _load_klvae(vae_cfg, vae_ckpt, device)
+        if vae_phi is None:
+            print("⚠️ phi consistency loss requested but VAE is unavailable; disabling.")
+            use_phi_consistency_loss = False
+            phi_consistency_weight = 0.0
+        else:
+            for p in vae_phi.parameters():
+                p.requires_grad = False
 
     for epoch in range(start_epoch, CONFIG["epochs"]):
         model.train()
@@ -373,7 +528,74 @@ def main():
                 else:
                     loss_stats = torch.zeros((), device=device, dtype=loss_x0.dtype)
 
-                loss = loss_diff + x0_w * loss_x0 + target_stats_weight * loss_stats
+                pred_center_all = pred_x0[
+                    :,
+                    :,
+                    center_start:center_end,
+                    center_start:center_end,
+                    center_start:center_end,
+                ]
+                gt_center_all = x0[
+                    :,
+                    :,
+                    center_start:center_end,
+                    center_start:center_end,
+                    center_start:center_end,
+                ]
+                phi_local_target_all = phi[
+                    :,
+                    0:1,
+                    center_start:center_end,
+                    center_start:center_end,
+                    center_start:center_end,
+                ].mean(dim=(1, 2, 3, 4))
+                phi_target_mean = float(phi_local_target_all.detach().mean().item())
+
+                # Optional sub-batch for expensive decode-based phi loss.
+                if phi_loss_max_batch > 0 and B > phi_loss_max_batch:
+                    idx_phi = torch.randperm(B, device=device)[:phi_loss_max_batch]
+                    pred_center_phi = pred_center_all[idx_phi]
+                    phi_local_target_phi = phi_local_target_all[idx_phi]
+                else:
+                    pred_center_phi = pred_center_all
+                    phi_local_target_phi = phi_local_target_all
+
+                do_decode_phi = (
+                    use_phi_consistency_loss
+                    and phi_consistency_weight > 0.0
+                    and vae_phi is not None
+                    and (global_step % phi_loss_every_steps == 0)
+                )
+                if do_decode_phi:
+                    if device.type == "cuda":
+                        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                            pred_logits = vae_phi.decode(pred_center_phi)
+                    else:
+                        pred_logits = vae_phi.decode(pred_center_phi)
+                    pred_prob = torch.sigmoid(pred_logits)
+                    pred_phi_local = pred_prob.mean(dim=(1, 2, 3, 4))
+                    loss_phi = torch.abs(pred_phi_local - phi_local_target_phi).mean()
+                else:
+                    loss_phi = torch.zeros((), device=device, dtype=loss_x0.dtype)
+
+                # Lightweight latent-space porosity proxy (no VAE decode).
+                if use_phi_proxy_loss and phi_proxy_weight > 0.0:
+                    loss_phi_proxy = _latent_phi_proxy_loss(
+                        pred_center=pred_center_all,
+                        gt_center=gt_center_all,
+                        phi_local_target=phi_local_target_all,
+                        ridge=phi_proxy_ridge,
+                    ).to(dtype=loss_x0.dtype)
+                else:
+                    loss_phi_proxy = torch.zeros((), device=device, dtype=loss_x0.dtype)
+
+                loss = (
+                    loss_diff
+                    + x0_w * loss_x0
+                    + target_stats_weight * loss_stats
+                    + phi_consistency_weight * loss_phi
+                    + phi_proxy_weight * loss_phi_proxy
+                )
 
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -389,6 +611,10 @@ def main():
             postfix = {"loss": f"{loss.item():.4f}", "diff": f"{loss_diff.item():.4f}"}
             if use_target_stats_loss and target_stats_weight > 0.0:
                 postfix["stats"] = f"{loss_stats.item():.4f}"
+            if use_phi_consistency_loss and phi_consistency_weight > 0.0:
+                postfix["phi"] = f"{loss_phi.item():.4f}"
+            if use_phi_proxy_loss and phi_proxy_weight > 0.0:
+                postfix["phi_proxy"] = f"{loss_phi_proxy.item():.4f}"
             pbar.set_postfix(postfix)
 
             if global_step % CONFIG.get("save_log_every", 1) == 0:
@@ -400,6 +626,29 @@ def main():
                         f"{loss_diff.item():.6f}",
                         f"{loss_x0.item():.6f}",
                     ])
+                with open(csv_detail_path, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(
+                        [
+                            epoch,
+                            global_step,
+                            f"{loss.item():.6f}",
+                            optimizer.param_groups[0]["lr"],
+                            f"{loss_diff.item():.6f}",
+                            f"{loss_x0.item():.6f}",
+                            f"{loss_stats.item():.6f}",
+                            f"{loss_phi.item():.6f}",
+                            f"{loss_phi_proxy.item():.6f}",
+                            f"{(phi_consistency_weight * loss_phi).item():.6f}",
+                            f"{(phi_proxy_weight * loss_phi_proxy).item():.6f}",
+                            int(do_decode_phi),
+                            f"{phi_consistency_weight:.6f}",
+                            f"{phi_proxy_weight:.6f}",
+                            int(phi_loss_every_steps),
+                            int(phi_loss_max_batch),
+                            f"{phi_target_mean:.6f}",
+                        ]
+                    )
 
             # eval during training
             if int(CONFIG.get("eval_every_steps", 0)) > 0 and (global_step % int(CONFIG.get("eval_every_steps", 0)) == 0):
