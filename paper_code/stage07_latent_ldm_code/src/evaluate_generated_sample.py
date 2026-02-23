@@ -376,8 +376,8 @@ def main():
     # decode predicted latent
     vae = load_vae(vae_cfg, vae_ckpt, device)
     pred_prob, pred_bin = decode_to_prob_and_bin(pred_lat_unscaled, vae, device, args.threshold)
-    np.save(os.path.join(out_dir, "pred_voxel_prob.npy"), pred_prob)
-    np.save(os.path.join(out_dir, "pred_voxel_bin.npy"), pred_bin)
+    # np.save(os.path.join(out_dir, "pred_voxel_prob.npy"), pred_prob)
+    # np.save(os.path.join(out_dir, "pred_voxel_bin.npy"), pred_bin)
     save_slices_single(
         pred_prob,
         os.path.join(out_dir, "pred_voxel_prob.png"),
@@ -441,8 +441,8 @@ def main():
     # phi consistency
     pred_phi_bin = compute_phi_map(pred_bin.astype(np.float32), patch_voxel)
     pred_phi_prob = compute_phi_map(pred_prob.astype(np.float32), patch_voxel)
-    np.save(os.path.join(out_dir, "pred_phi_from_bin.npy"), pred_phi_bin)
-    np.save(os.path.join(out_dir, "pred_phi_from_prob.npy"), pred_phi_prob)
+    # np.save(os.path.join(out_dir, "pred_phi_from_bin.npy"), pred_phi_bin)
+    # np.save(os.path.join(out_dir, "pred_phi_from_prob.npy"), pred_phi_prob)
 
     gt_phi = None
     if gt_phi_path and os.path.exists(gt_phi_path):

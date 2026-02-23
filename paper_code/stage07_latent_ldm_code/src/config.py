@@ -6,8 +6,8 @@ import torch
 
 CONFIG = {
     # ------------------ 实验配置 ------------------
-    "experiment_name": "stage07_patch_ldm_v5",
-    "note": "基于因果滑窗的 Patch 级潜空间扩散",
+    "experiment_name": "stage07_patch_ldm_v6",
+    "note": "基于因果滑窗的 Patch 级潜空间扩散，强化孔隙率一致性损失，调整采样策略和训练超参",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 
     # ------------------ 数据配置 ------------------
@@ -51,9 +51,13 @@ CONFIG = {
     "train_direction": "+++",
 
     # 目标 patch 采样策略
-    "anchor_sampling_mode": "low_context_boost",  # uniform | low_context_boost
+    "anchor_sampling_mode": "porosity_balanced",  # uniform | low_context_boost | porosity_balanced
     "anchor_boost_power": 1.0,
     "anchor_boost_min_weight": 0.05,
+    "anchor_porosity_semantic": "pore",  # "pore" | "rock_rate"
+    "anchor_porosity_bin_edges": [0.0, 0.02, 0.05, 0.10, 0.18, 0.28, 0.60],
+    "anchor_porosity_power": 1.2,
+    "anchor_porosity_min_weight": 0.05,
     "pad_mode": "edge",  # edge | reflect | constant
 
     # ------------------ 模型配置 ------------------
@@ -65,7 +69,7 @@ CONFIG = {
     "timesteps": 1000,
 
     # ------------------ 训练配置 ------------------
-    "batch_size": 32,
+    "batch_size": 16,
     "num_workers": 8,
     "pin_memory": True,
     "epochs": 200,
@@ -85,14 +89,20 @@ CONFIG = {
     "use_target_stats_loss": True,
     "target_stats_weight": 0.05,
     "use_phi_consistency_loss": True,
-    "phi_consistency_weight": 0.08,
+    "phi_consistency_weight": 0.16,
     # 解码式孔隙率一致性损失的轻量控制（仅在 use_phi_consistency_loss=True 时生效）
     "phi_loss_every_steps": 1,   # compute decode-based phi loss every step for stronger conditioning
-    "phi_loss_max_batch": 4,     # use sub-batch to balance memory and effective supervision
+    "phi_loss_max_batch": 0,     # 0 means use all valid samples for phi loss
+    "phi_loss_t_min_ratio": 0.0,
+    "phi_loss_t_max_ratio": 0.35,  # apply phi losses at lower-noise diffusion steps
+    "phi_loss_use_low_noise_snr_weight": True,
+    "phi_loss_snr_gamma": 5.0,
     # 轻量 latent 代理孔隙率损失（不走 VAE 解码，显存开销很小）
     "use_phi_proxy_loss": True,
-    "phi_proxy_weight": 0.05,
+    "phi_proxy_weight": 0.08,
     "phi_proxy_ridge": 1e-4,
+    "phi_proxy_use_phi_t_filter": True,
+    "phi_proxy_use_low_noise_snr_weight": True,
     "grad_clip_norm": 1.0,
     "boundary_band_width": 1,
     "boundary_band_weight": 4.0,
@@ -127,8 +137,8 @@ CONFIG = {
     "infer_direction": "+++",
     "infer_max_patch_batch": 16,
     "infer_use_ema": True,
-    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v5\models\unet_epoch_25.pth",
-    "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z3072_y192_x576.npy",
+    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v6\models\unet_epoch_30.pth",
+    "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z3008_y128_x384.npy",
     "output_latent_path": "generated_latent.npy",
     "output_unscaled": True,
 }

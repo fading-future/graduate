@@ -58,6 +58,16 @@ def _preserve_rng_state(device: torch.device):
 
 
 def setup_experiment():
+    """
+    setup_experiment 的 Docstring
+    parameters:
+    returns:
+        exp_dir: str, 实验主目录路径
+        model_dir: str, 模型保存目录路径
+        log_dir: str, 日志保存目录路径
+        csv_path: str, 训练日志 CSV 文件路径
+        csv_detail_path: str, 训练详细日志 CSV 文件路径
+    """
     root = get_root()
     exp_dir = os.path.join(root, "exp_results", CONFIG["experiment_name"])
     os.makedirs(exp_dir, exist_ok=True)
@@ -106,6 +116,12 @@ def setup_experiment():
 
 
 def _phi_channels() -> int:
+    """
+    _phi_channels 的 Docstring
+    
+    :return: phi 相关的输入通道数，取决于 CONFIG 中是否启用 use_global_phi_channel
+    :rtype: int
+    """
     return 2 if bool(CONFIG.get("use_global_phi_channel", False)) else 1
 
 
@@ -233,6 +249,14 @@ def _latent_phi_proxy_loss(
         return torch.abs(pred_phi_proxy - target).mean()
 
 
+def _low_noise_snr_weights(ab_t_scalar: torch.Tensor, gamma: float) -> torch.Tensor:
+    # ab_t_scalar: (N,), values in (0,1)
+    denom = torch.clamp(1.0 - ab_t_scalar, min=1e-8)
+    snr = ab_t_scalar / denom
+    g = max(float(gamma), 1e-6)
+    return torch.clamp(snr / g, max=1.0)
+
+
 def run_eval_step(model, diffusion, device, step, exp_dir):
     eval_every = int(CONFIG.get("eval_every_steps", 0))
     if eval_every <= 0:
@@ -322,13 +346,27 @@ def run_eval_step(model, diffusion, device, step, exp_dir):
 
 
 def main():
+    """
+    Stage07 主训练入口。
+
+    主要流程：
+    1) 构建数据集/采样器/DataLoader
+    2) 构建模型、扩散器、优化器、EMA 与混合精度工具
+    3) （可选）从最近 checkpoint 恢复训练状态
+    4) 训练循环：扩散噪声监督 + x0 监督 + 统计约束 + phi 约束
+    5) 记录日志、周期评估、保存 checkpoint
+    """
+    # ------------------ 初始化实验与设备 ------------------
     device = torch.device(CONFIG["device"])
     exp_dir, model_dir, log_dir, csv_path, csv_detail_path = setup_experiment()
 
+    # ------------------ 构建数据加载 ------------------
     dataset = PatchLatentDataset(CONFIG["latent_dir"], CONFIG["phi_map_dir"], augment=True)
+    # 默认 DataLoader 行为：均匀随机打乱样本（每个样本被抽到的概率相同）
     sampler = None
     shuffle = True
     if bool(CONFIG.get("use_porosity_weighted_sampler", False)):
+        # 按样本级孔隙率统计做“逆频率重采样”，让稀有孔隙率区间被更频繁抽到
         bin_edges = list(CONFIG.get("porosity_bin_edges", [0.0, 0.75, 0.9, 0.96, 0.985, 1.01]))
         power = float(CONFIG.get("porosity_sampler_power", 1.0))
         min_w = float(CONFIG.get("porosity_sampler_min_weight", 0.2))
@@ -342,11 +380,14 @@ def main():
         sampler = WeightedRandomSampler(
             weights=torch.from_numpy(sample_w).double(),
             num_samples=len(sample_w),
+            # 有放回采样：同一 epoch 内样本可重复出现，便于放大稀有分箱
             replacement=True,
         )
+        # 使用 sampler 时必须关闭 shuffle（PyTorch 不允许同时指定）
         shuffle = False
         stats = getattr(dataset, "_last_sampler_stats", {})
         if stats:
+            # 打印统计信息，便于确认重采样是否按预期生效
             print(f"[sampler] semantic={stats.get('semantic', 'pore')}")
             print(f"[sampler] bin_edges={stats.get('bin_edges')}")
             print(f"[sampler] bin_counts={stats.get('bin_counts')}")
@@ -370,6 +411,7 @@ def main():
         pin_memory=CONFIG.get("pin_memory", True),
     )
 
+    # ------------------ 构建模型与优化组件 ------------------
     model = ConditionalLatentUNet(
         in_channels=_resolve_in_channels(),
         out_channels=CONFIG["out_channels"],
@@ -384,6 +426,7 @@ def main():
     diffusion = DiffusionHelper(CONFIG["timesteps"], device)
     scaler = GradScaler("cuda" if device.type == "cuda" else "cpu")
 
+    # ------------------ 断点恢复（可选） ------------------
     start_epoch = 0
     global_step = 0
     if CONFIG.get("resume", True):
@@ -407,6 +450,8 @@ def main():
 
     print(f"🚀 Start training at epoch {start_epoch}, step {global_step}")
 
+    # ------------------ 读取训练策略超参数 ------------------
+    # 这部分把 CONFIG 中的损失项和权重读出来，便于后续组合总损失。
     loss_type = CONFIG.get("loss_type", "l1").lower()
     use_min_snr = bool(CONFIG.get("use_min_snr", True))
     gamma = float(CONFIG.get("min_snr_gamma", 5.0))
@@ -417,9 +462,15 @@ def main():
     phi_consistency_weight = float(CONFIG.get("phi_consistency_weight", 0.0))
     phi_loss_every_steps = max(1, int(CONFIG.get("phi_loss_every_steps", 1)))
     phi_loss_max_batch = int(CONFIG.get("phi_loss_max_batch", 0))
+    phi_loss_t_min_ratio = float(CONFIG.get("phi_loss_t_min_ratio", 0.0))
+    phi_loss_t_max_ratio = float(CONFIG.get("phi_loss_t_max_ratio", -1.0))
+    phi_loss_use_low_noise_snr_weight = bool(CONFIG.get("phi_loss_use_low_noise_snr_weight", False))
+    phi_loss_snr_gamma = float(CONFIG.get("phi_loss_snr_gamma", gamma))
     use_phi_proxy_loss = bool(CONFIG.get("use_phi_proxy_loss", False))
     phi_proxy_weight = float(CONFIG.get("phi_proxy_weight", 0.0))
     phi_proxy_ridge = float(CONFIG.get("phi_proxy_ridge", 1e-4))
+    phi_proxy_use_phi_t_filter = bool(CONFIG.get("phi_proxy_use_phi_t_filter", True))
+    phi_proxy_use_low_noise_snr_weight = bool(CONFIG.get("phi_proxy_use_low_noise_snr_weight", False))
     band_w = int(CONFIG.get("boundary_band_width", 0))
     band_weight = float(CONFIG.get("boundary_band_weight", 0.0))
     safe_thresh = float(CONFIG.get("safe_threshold", 8.0))
@@ -428,14 +479,33 @@ def main():
     center_start = (window_size // 2) * patch_size
     center_end = center_start + patch_size
 
+    # phi 辅助损失只在低噪声时间步段启用（可通过 ratio 控制）
+    # 直观上：低噪声步的 x0 估计更可信，更适合做 phi 一致性约束。
+    t_total = int(CONFIG["timesteps"])
+    phi_t_min = int(round(max(0.0, phi_loss_t_min_ratio) * max(t_total - 1, 1)))
+    if phi_loss_t_max_ratio < 0.0:
+        phi_t_max = t_total - 1
+    else:
+        phi_t_max = int(round(min(1.0, max(0.0, phi_loss_t_max_ratio)) * max(t_total - 1, 1)))
+    phi_t_min = int(np.clip(phi_t_min, 0, max(t_total - 1, 0)))
+    phi_t_max = int(np.clip(phi_t_max, 0, max(t_total - 1, 0)))
+    if phi_t_max < phi_t_min:
+        phi_t_max = phi_t_min
+
     print(
         "[phi] settings: "
-        f"consistency_weight={phi_consistency_weight}, "
+        f"consistency_weight={phi_consistency_weight}, "            
         f"proxy_weight={phi_proxy_weight}, "
         f"loss_every_steps={phi_loss_every_steps}, "
-        f"loss_max_batch={phi_loss_max_batch}"
+        f"loss_max_batch={phi_loss_max_batch}, "
+        f"t_range=[{phi_t_min},{phi_t_max}], "
+        f"decode_snr_weight={phi_loss_use_low_noise_snr_weight}, "
+        f"proxy_t_filter={phi_proxy_use_phi_t_filter}, "
+        f"proxy_snr_weight={phi_proxy_use_low_noise_snr_weight}"
     )
 
+    # ------------------ 载入 VAE（仅用于 decode 式 phi 损失） ------------------
+    # 注意：这里只作为固定评估器使用，不参与参数更新。
     vae_phi = None
     if use_phi_consistency_loss and phi_consistency_weight > 0.0:
         vae_cfg = CONFIG.get("eval_vae_config_path", "")
@@ -450,11 +520,14 @@ def main():
                 p.requires_grad = False
 
     for epoch in range(start_epoch, CONFIG["epochs"]):
+        # ------------------ 单个 epoch 训练 ------------------
         model.train()
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{CONFIG['epochs']}")
 
         for batch in pbar:
             global_step += 1
+            # 批数据：GT 为完整窗口真值；Condition/Mask 给出可见上下文；
+            # TargetMask 指定仅中心 patch 参与主要监督。
             x0 = batch["GT"].to(device, non_blocking=True)           # (B,C,D,H,W)
             cond = batch["Condition"].to(device, non_blocking=True)  # (B,C,D,H,W)
             mask = batch["Mask"].to(device, non_blocking=True)       # (B,1,D,H,W)
@@ -463,9 +536,11 @@ def main():
             por = batch["Porosity"].to(device, non_blocking=True)    # (B,1)
 
             B = x0.shape[0]
+            # 扩散时间步按样本独立随机采样
             t = torch.randint(0, CONFIG["timesteps"], (B,), device=device).long()
 
             with autocast("cuda" if device.type == "cuda" else "cpu"):
+                # q(x_t | x0): 将 x0 加噪到时间步 t
                 ab_t = diffusion.alphas_cumprod[t].view(-1, 1, 1, 1, 1)
                 sqrt_ab = torch.sqrt(ab_t)
                 sqrt_om = torch.sqrt(1.0 - ab_t)
@@ -473,14 +548,15 @@ def main():
                 noise = torch.randn_like(x0)
                 x_t = sqrt_ab * x0 + sqrt_om * noise
 
-                # keep known region consistent (same noise)
+                # 已知上下文区域强制与 cond 保持一致（使用同一份 noise 保证统计一致）
                 known_xt = sqrt_ab * cond + sqrt_om * noise
                 x_t = x_t * (1.0 - mask) + known_xt * mask
 
+                # 模型输入由 [当前噪声态, 条件 latent, 上下文掩码, phi 体条件] 组成
                 model_in = torch.cat([x_t, cond, mask, phi], dim=1)
                 eps_pred = model(model_in, t, por)
 
-                # diffusion loss on target patch only
+                # ------------------ 主损失 1：噪声预测损失（仅中心目标 patch） ------------------
                 if loss_type == "mse":
                     raw = (eps_pred - noise) ** 2
                 else:
@@ -508,12 +584,13 @@ def main():
                 weight_b = weight.expand(-1, C, -1, -1, -1)
                 loss_diff = (raw * weight_b).sum() / weight_b.sum().clamp_min(1.0)
 
-                # x0 loss on target patch (optional)
+                # ------------------ 主损失 2：x0 重建损失（仅中心目标 patch） ------------------
                 pred_x0 = (x_t - sqrt_om * eps_pred) / (sqrt_ab + 1e-8)
                 pred_x0 = torch.clamp(pred_x0, -safe_thresh, safe_thresh)
                 x0_raw = torch.abs(pred_x0 - x0)
                 loss_x0 = (x0_raw * weight_b).sum() / weight_b.sum().clamp_min(1.0)
 
+                # ------------------ 可选损失：目标区域统计量匹配 ------------------
                 if use_target_stats_loss and target_stats_weight > 0.0:
                     # Match mean/std inside target region to discourage collapsed predictions.
                     stat_w = tmask_b
@@ -550,23 +627,32 @@ def main():
                     center_start:center_end,
                 ].mean(dim=(1, 2, 3, 4))
                 phi_target_mean = float(phi_local_target_all.detach().mean().item())
+                phi_t_valid_mask_all = (t >= phi_t_min) & (t <= phi_t_max)
 
-                # Optional sub-batch for expensive decode-based phi loss.
-                if phi_loss_max_batch > 0 and B > phi_loss_max_batch:
-                    idx_phi = torch.randperm(B, device=device)[:phi_loss_max_batch]
+                # 仅在指定低噪声 t 区间计算 phi 相关损失，并可限制子批大小降低显存/耗时
+                idx_valid_phi = torch.where(phi_t_valid_mask_all)[0]
+                if phi_loss_max_batch > 0 and idx_valid_phi.numel() > phi_loss_max_batch:
+                    perm = torch.randperm(idx_valid_phi.numel(), device=device)[:phi_loss_max_batch]
+                    idx_phi = idx_valid_phi[perm]
+                else:
+                    idx_phi = idx_valid_phi
+                if idx_phi.numel() > 0:
                     pred_center_phi = pred_center_all[idx_phi]
                     phi_local_target_phi = phi_local_target_all[idx_phi]
                 else:
-                    pred_center_phi = pred_center_all
-                    phi_local_target_phi = phi_local_target_all
+                    pred_center_phi = pred_center_all[:0]
+                    phi_local_target_phi = phi_local_target_all[:0]
 
                 do_decode_phi = (
                     use_phi_consistency_loss
                     and phi_consistency_weight > 0.0
                     and vae_phi is not None
                     and (global_step % phi_loss_every_steps == 0)
+                    and idx_phi.numel() > 0
                 )
                 if do_decode_phi:
+                    # ------------------ 可选损失：decode 式 phi 一致性 ------------------
+                    # 用冻结的 VAE 解码中心 patch，约束其局部 phi 与目标 phi 一致。
                     if device.type == "cuda":
                         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                             pred_logits = vae_phi.decode(pred_center_phi)
@@ -574,21 +660,40 @@ def main():
                         pred_logits = vae_phi.decode(pred_center_phi)
                     pred_prob = torch.sigmoid(pred_logits)
                     pred_phi_local = pred_prob.mean(dim=(1, 2, 3, 4))
-                    loss_phi = torch.abs(pred_phi_local - phi_local_target_phi).mean()
+                    phi_abs_err = torch.abs(pred_phi_local - phi_local_target_phi)
+                    if phi_loss_use_low_noise_snr_weight:
+                        ab_phi = ab_t[idx_phi, 0, 0, 0, 0].to(torch.float32)
+                        w_phi = _low_noise_snr_weights(ab_phi, phi_loss_snr_gamma).to(phi_abs_err.dtype)
+                        loss_phi = (phi_abs_err * w_phi).sum() / w_phi.sum().clamp_min(1e-8)
+                    else:
+                        loss_phi = phi_abs_err.mean()
                 else:
                     loss_phi = torch.zeros((), device=device, dtype=loss_x0.dtype)
 
-                # Lightweight latent-space porosity proxy (no VAE decode).
+                # ------------------ 可选损失：latent 代理 phi 损失（不走解码） ------------------
+                # 用轻量线性探针在 latent 空间近似约束 porosity，计算开销更小。
                 if use_phi_proxy_loss and phi_proxy_weight > 0.0:
-                    loss_phi_proxy = _latent_phi_proxy_loss(
-                        pred_center=pred_center_all,
-                        gt_center=gt_center_all,
-                        phi_local_target=phi_local_target_all,
-                        ridge=phi_proxy_ridge,
-                    ).to(dtype=loss_x0.dtype)
+                    if phi_proxy_use_phi_t_filter:
+                        idx_proxy = torch.where(phi_t_valid_mask_all)[0]
+                    else:
+                        idx_proxy = torch.arange(B, device=device)
+                    if idx_proxy.numel() > 0:
+                        loss_phi_proxy = _latent_phi_proxy_loss(
+                            pred_center=pred_center_all[idx_proxy],
+                            gt_center=gt_center_all[idx_proxy],
+                            phi_local_target=phi_local_target_all[idx_proxy],
+                            ridge=phi_proxy_ridge,
+                        ).to(dtype=loss_x0.dtype)
+                        if phi_proxy_use_low_noise_snr_weight:
+                            ab_proxy = ab_t[idx_proxy, 0, 0, 0, 0].to(torch.float32)
+                            w_proxy = _low_noise_snr_weights(ab_proxy, phi_loss_snr_gamma).to(loss_phi_proxy.dtype)
+                            loss_phi_proxy = loss_phi_proxy * w_proxy.mean()
+                    else:
+                        loss_phi_proxy = torch.zeros((), device=device, dtype=loss_x0.dtype)
                 else:
                     loss_phi_proxy = torch.zeros((), device=device, dtype=loss_x0.dtype)
 
+                # 总损失 = 主损失 + 各辅助项（由权重控制）
                 loss = (
                     loss_diff
                     + x0_w * loss_x0
@@ -597,6 +702,7 @@ def main():
                     + phi_proxy_weight * loss_phi_proxy
                 )
 
+            # ------------------ 反向传播与参数更新 ------------------
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             grad_clip_norm = float(CONFIG.get("grad_clip_norm", 0.0))
@@ -606,6 +712,7 @@ def main():
             scaler.step(optimizer)
             scaler.update()
 
+            # EMA 维护一份平滑权重，便于更稳定的评估/推理
             ema.update(model)
 
             postfix = {"loss": f"{loss.item():.4f}", "diff": f"{loss_diff.item():.4f}"}
@@ -617,6 +724,7 @@ def main():
                 postfix["phi_proxy"] = f"{loss_phi_proxy.item():.4f}"
             pbar.set_postfix(postfix)
 
+            # ------------------ 日志记录 ------------------
             if global_step % CONFIG.get("save_log_every", 1) == 0:
                 with open(csv_path, "a", newline="") as f:
                     writer = csv.writer(f)
@@ -650,7 +758,7 @@ def main():
                         ]
                     )
 
-            # eval during training
+            # ------------------ 训练中评估（可选） ------------------
             if int(CONFIG.get("eval_every_steps", 0)) > 0 and (global_step % int(CONFIG.get("eval_every_steps", 0)) == 0):
                 use_ema_eval = bool(CONFIG.get("eval_use_ema", False))
                 if use_ema_eval and hasattr(ema, "ema_model"):
@@ -659,8 +767,10 @@ def main():
                     eval_model = model
                 run_eval_step(eval_model, diffusion, device, global_step, exp_dir)
 
+        # epoch 结束后更新学习率调度器
         scheduler.step()
 
+        # ------------------ 周期保存 checkpoint ------------------
         if (epoch + 1) % CONFIG["save_model_every"] == 0:
             ckpt = {
                 "epoch": epoch + 1,
