@@ -293,6 +293,7 @@ def run_eval_step(model, diffusion, device, step, exp_dir):
                 steps=int(CONFIG.get("eval_ddim_steps", 50)),
                 seed=seed,
                 safe_thresh=float(CONFIG.get("safe_threshold", 8.0)),
+                cfg_scale=float(CONFIG.get("cfg_scale", 1.0)),
             )
         if model_was_train:
             model.train()
@@ -418,6 +419,8 @@ def main():
         base_channels=CONFIG["base_channels"],
         channel_mults=CONFIG["channel_mults"],
         use_attention=CONFIG["use_attention"],
+        use_adagn=bool(CONFIG.get("use_adagn", False)),
+        cfg_drop_prob=float(CONFIG.get("cfg_drop_prob", 0.0)),
     ).to(device)
 
     ema = EMA(model, decay=float(CONFIG.get("ema_decay", 0.9999))).to(device)

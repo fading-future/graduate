@@ -213,6 +213,8 @@ def load_model(ckpt_path: str, device: torch.device):
         base_channels=CONFIG["base_channels"],
         channel_mults=CONFIG["channel_mults"],
         use_attention=CONFIG["use_attention"],
+        use_adagn=bool(CONFIG.get("use_adagn", False)),
+        cfg_drop_prob=0.0,  # no dropout at inference
     ).to(device)
     ckpt = _safe_torch_load(ckpt_path, map_location=device)
     state_name = "raw"
@@ -239,10 +241,20 @@ def load_model(ckpt_path: str, device: torch.device):
     return model
 
 
-def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper, steps=200, seed=1234, safe_thresh=8.0):
+def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper,
+                steps=200, seed=1234, safe_thresh=8.0, cfg_scale=1.0):
+    """DDIM sampling with optional Classifier-Free Guidance.
+
+    When ``cfg_scale > 1.0``, the model is called twice per step:
+    once with the real porosity condition, once with the null embedding.
+    The final noise prediction is a linear combination:
+        eps = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
+    This amplifies the porosity conditioning signal at inference time.
+    """
     model.eval()
     total_timesteps = diffusion.timesteps
     alphas_cumprod = diffusion.alphas_cumprod
+    use_cfg = cfg_scale > 1.0 + 1e-6
 
     times = torch.linspace(0, total_timesteps - 1, steps=steps, device=cond.device)
     times = torch.unique(torch.round(times).long(), sorted=True)
@@ -263,7 +275,18 @@ def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper, st
             t_prev = times[i + 1] if i < len(times) - 1 else -1
 
             model_in = torch.cat([x, cond, mask, phi], dim=1)
-            eps = model(model_in, t_tensor, porosity)
+
+            # ─── Conditional prediction ───
+            eps_cond = model(model_in, t_tensor, porosity)
+
+            if use_cfg:
+                # ─── Unconditional prediction (null porosity embedding) ───
+                eps_uncond = model(model_in, t_tensor, porosity,
+                                   force_null_porosity=True)
+                # Guided combination
+                eps = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
+            else:
+                eps = eps_cond
 
             ab_t = alphas_cumprod[t]
             ab_prev = alphas_cumprod[t_prev] if t_prev >= 0 else torch.tensor(1.0, device=cond.device)
@@ -490,6 +513,7 @@ def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, wind
             steps=steps,
             seed=batch_seed,
             safe_thresh=CONFIG["safe_threshold"],
+            cfg_scale=float(CONFIG.get("cfg_scale", 1.0)),
         )
         x_np = x.detach().cpu().float().numpy()
 

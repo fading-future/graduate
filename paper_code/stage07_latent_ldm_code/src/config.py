@@ -6,8 +6,8 @@ import torch
 
 CONFIG = {
     # ------------------ 实验配置 ------------------
-    "experiment_name": "stage07_patch_ldm_v6",
-    "note": "基于因果滑窗的 Patch 级潜空间扩散，强化孔隙率一致性损失，调整采样策略和训练超参",
+    "experiment_name": "stage07_patch_ldm_v7.1",
+    "note": "AdaGN架构升级+CFG条件增强+phi损失权重提升，增强孔隙率条件控制",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 
     # ------------------ 数据配置 ------------------
@@ -68,6 +68,11 @@ CONFIG = {
     "use_attention": (False, True, True),
     "timesteps": 1000,
 
+    # AdaGN：孔隙率嵌入通过 scale & shift 调制 GroupNorm，增强条件控制力
+    "use_adagn": True,
+    # Classifier-Free Guidance：训练时以此概率随机丢弃孔隙率条件
+    "cfg_drop_prob": 0.1,
+
     # ------------------ 训练配置 ------------------
     "batch_size": 16,
     "num_workers": 8,
@@ -89,7 +94,7 @@ CONFIG = {
     "use_target_stats_loss": True,
     "target_stats_weight": 0.05,
     "use_phi_consistency_loss": True,
-    "phi_consistency_weight": 0.16,
+    "phi_consistency_weight": 0.30,
     # 解码式孔隙率一致性损失的轻量控制（仅在 use_phi_consistency_loss=True 时生效）
     "phi_loss_every_steps": 1,   # compute decode-based phi loss every step for stronger conditioning
     "phi_loss_max_batch": 0,     # 0 means use all valid samples for phi loss
@@ -99,7 +104,7 @@ CONFIG = {
     "phi_loss_snr_gamma": 5.0,
     # 轻量 latent 代理孔隙率损失（不走 VAE 解码，显存开销很小）
     "use_phi_proxy_loss": True,
-    "phi_proxy_weight": 0.08,
+    "phi_proxy_weight": 0.12,
     "phi_proxy_ridge": 1e-4,
     "phi_proxy_use_phi_t_filter": True,
     "phi_proxy_use_low_noise_snr_weight": True,
@@ -136,8 +141,10 @@ CONFIG = {
     "infer_random_direction": True,
     "infer_direction": "+++",
     "infer_max_patch_batch": 16,
-    "infer_use_ema": True,
-    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v6\models\unet_epoch_30.pth",
+    "infer_use_ema": False,
+    # Classifier-Free Guidance scale：>1 时增强孔隙率条件响应，1.0 表示不使用 CFG
+    "cfg_scale": 2.0,
+    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v7.1\models\unet_epoch_18.pth",
     "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z3008_y128_x384.npy",
     "output_latent_path": "generated_latent.npy",
     "output_unscaled": True,
