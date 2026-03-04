@@ -235,6 +235,9 @@ def ddim_sample(model, condition, mask, porosity, device, ddim_steps=50, seed: i
             pred_x0 = (x - torch.sqrt(1.0 - alpha_bar_t) * noise_pred) / (torch.sqrt(alpha_bar_t) + 1e-8)
             pred_x0 = torch.clamp(pred_x0, -SAFE_LIMIT, SAFE_LIMIT)
 
+            # Recompute noise_pred from clamped pred_x0 to keep DDIM update consistent
+            noise_pred = (x - torch.sqrt(alpha_bar_t) * pred_x0) / (torch.sqrt(1.0 - alpha_bar_t) + 1e-8)
+
             # DDIM update (eta=0)
             x_prev = torch.sqrt(alpha_bar_prev) * pred_x0 + torch.sqrt(1.0 - alpha_bar_prev) * noise_pred
 

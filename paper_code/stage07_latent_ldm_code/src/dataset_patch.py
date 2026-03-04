@@ -267,6 +267,8 @@ class PatchLatentDataset(Dataset):
         self.porosity_mix_alpha = float(CONFIG.get("porosity_mix_alpha", 0.7))
         self.use_global_phi_channel = bool(CONFIG.get("use_global_phi_channel", False))
         self.porosity_map = _load_porosity_map(CONFIG.get("porosity_csv", ""))
+        # Context Dropout：以一定概率将所有上下文 patch 置零，模拟推理时无上下文场景
+        self.context_drop_prob = float(CONFIG.get("context_drop_prob", 0.0))
         self.porosity_sampler_semantic = _normalize_sampler_semantic(
             CONFIG.get("porosity_sampler_semantic", "pore")
         )
@@ -601,6 +603,12 @@ class PatchLatentDataset(Dataset):
                         )
                     if known:
                         mask_patch[di, dj, dk] = 1.0
+
+        # ── Context Dropout：训练时以 context_drop_prob 概率清零全部上下文 ──
+        # 目的：让模型学会在无上下文时仅凭 phi_map + porosity 独立生成，
+        # 弥合推理时首批 patch（无已知邻居）的训练-推理分布差异。
+        if self.augment and self.context_drop_prob > 0.0 and random.random() < self.context_drop_prob:
+            mask_patch = np.zeros_like(mask_patch)  # 全部上下文置为未知
 
         # 将 patch 级掩码扩展为 voxel 级掩码
         mask = _repeat_phi(mask_patch, p)[None, ...]  # (1, w*p, w*p, w*p)

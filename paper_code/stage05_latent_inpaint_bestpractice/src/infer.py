@@ -129,6 +129,9 @@ def ddim_sample(model, cond, mask, porosity, diffusion: DiffusionHelper, steps=5
             pred_x0 = (x - torch.sqrt(1.0 - ab_t) * eps) / (torch.sqrt(ab_t) + 1e-8)
             pred_x0 = torch.clamp(pred_x0, -safe_thresh, safe_thresh)
 
+            # Recompute eps from clamped pred_x0 to keep DDIM update consistent
+            eps = (x - torch.sqrt(ab_t) * pred_x0) / (torch.sqrt(1.0 - ab_t) + 1e-8)
+
             x_prev = torch.sqrt(ab_prev) * pred_x0 + torch.sqrt(1.0 - ab_prev) * eps
 
             if t_prev >= 0:

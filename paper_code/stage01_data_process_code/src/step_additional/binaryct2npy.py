@@ -23,14 +23,14 @@ import sys
 # ==============================================================================
 CONFIG = {
     'src_root': r"D:\多尺度岩心数据集",
-    'dst_root': r"D:\多尺度岩心数据集\6-6-21_Global_Consistency\Final_Result_Sorted_w192_s64", 
+    'dst_root': r"D:\多尺度岩心数据集\6-6-24_Global_Consistency\Final_Result_Sorted_w512_s64", 
     
     'target_folders': [
-        "6-6-21_Global_Consistency"
-        # "6-6-21_Append_1"
+        "6-6-24_Global_Consistency"
+        # "6-6-24_Append_1"
     ],
 
-    'crop_size': 192,   
+    'crop_size': 512,   
     'stride_z': 64,    
     'stride_xy': 64,    
 

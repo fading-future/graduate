@@ -294,6 +294,7 @@ def run_eval_step(model, diffusion, device, step, exp_dir):
                 seed=seed,
                 safe_thresh=float(CONFIG.get("safe_threshold", 8.0)),
                 cfg_scale=float(CONFIG.get("cfg_scale", 1.0)),
+                context_cfg_scale=float(CONFIG.get("context_cfg_scale", 1.0)),
             )
         if model_was_train:
             model.train()
@@ -590,7 +591,11 @@ def main():
                 # ------------------ 主损失 2：x0 重建损失（仅中心目标 patch） ------------------
                 pred_x0 = (x_t - sqrt_om * eps_pred) / (sqrt_ab + 1e-8)
                 pred_x0 = torch.clamp(pred_x0, -safe_thresh, safe_thresh)
-                x0_raw = torch.abs(pred_x0 - x0)
+                # 与主损失保持一致：MSE 时用平方，L1 时用绝对值
+                if loss_type == "mse":
+                    x0_raw = (pred_x0 - x0) ** 2
+                else:
+                    x0_raw = torch.abs(pred_x0 - x0)
                 loss_x0 = (x0_raw * weight_b).sum() / weight_b.sum().clamp_min(1.0)
 
                 # ------------------ 可选损失：目标区域统计量匹配 ------------------

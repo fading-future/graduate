@@ -206,6 +206,55 @@ def _seeded_randn_like(x: torch.Tensor, seed):
     return torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=gen)
 
 
+# ─── Latent Variance Rescaling ───────────────────────────────────────
+# 数据集统计：pore_rate → 期望 latent_std（scaled 前）的线性映射参数
+# 由 `latent_std = _RESCALE_STD_BASE + _RESCALE_STD_SLOPE * pore_rate` 拟合
+# pore_rate=0.0 → std≈0.58,  pore_rate=0.5 → std≈0.95
+_RESCALE_STD_BASE = 0.58       # 纯岩石 latent std (intercept)
+_RESCALE_STD_SLOPE = 0.72      # 每增加 1.0 pore_rate, std 增长量
+
+
+def _expected_latent_std(rock_rate: float) -> float:
+    """根据 phi_map 值（rock_rate）估算该 patch 的期望 latent std。
+
+    数据集统计（unscaled latent）：
+      pore [0.00, 0.05): latent_std ≈ 0.64
+      pore [0.05, 0.10): latent_std ≈ 0.77
+      pore [0.10, 0.18): latent_std ≈ 0.80
+      pore [0.18, 0.28): latent_std ≈ 0.87
+      pore [0.28, 0.60): latent_std ≈ 0.90
+
+    使用线性插值 std = base + slope * pore_rate 近似。
+    """
+    pore_rate = max(0.0, min(1.0, 1.0 - rock_rate))
+    return _RESCALE_STD_BASE + _RESCALE_STD_SLOPE * pore_rate
+
+
+def _rescale_patch_variance(
+    patch: np.ndarray,
+    target_std: float,
+    strength: float = 1.0,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """将 patch latent 的标准差校正到 target_std。
+
+    strength ∈ [0, 1]：0=不修改，1=完全校正到 target_std。
+    中间值做线性插值（soft rescale），避免突变。
+    """
+    if strength <= 0.0 or target_std <= 0.0:
+        return patch
+    cur_std = float(patch.std())
+    if cur_std < eps:
+        return patch
+    # 目标缩放因子
+    ratio = target_std / cur_std
+    # soft: 实际 ratio = lerp(1.0, ratio, strength)
+    effective_ratio = 1.0 + strength * (ratio - 1.0)
+    # 保持均值不变，仅缩放方差
+    mean = patch.mean()
+    return (patch - mean) * effective_ratio + mean
+
+
 def load_model(ckpt_path: str, device: torch.device):
     model = ConditionalLatentUNet(
         in_channels=_resolve_in_channels(),
@@ -242,19 +291,37 @@ def load_model(ckpt_path: str, device: torch.device):
 
 
 def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper,
-                steps=200, seed=1234, safe_thresh=8.0, cfg_scale=1.0):
-    """DDIM sampling with optional Classifier-Free Guidance.
+                steps=200, seed=1234, safe_thresh=8.0, cfg_scale=1.0,
+                context_cfg_scale=1.0):
+    """DDIM sampling with optional Porosity-CFG and Context-CFG.
 
-    When ``cfg_scale > 1.0``, the model is called twice per step:
-    once with the real porosity condition, once with the null embedding.
-    The final noise prediction is a linear combination:
-        eps = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
-    This amplifies the porosity conditioning signal at inference time.
+    Supports two orthogonal guidance axes:
+
+    1. **Porosity-CFG** (``cfg_scale > 1``): amplifies porosity conditioning
+       by comparing conditional vs null-porosity predictions.
+    2. **Context-CFG** (``context_cfg_scale > 1``): amplifies spatial context
+       influence by comparing full-context vs zero-context predictions.
+       This requires the model to have been trained with context dropout
+       (``context_drop_prob > 0``) so that zero-context is in-distribution.
+
+    Guidance combination (when both active)::
+
+        eps_base = model(cond=0, por=null)          # fully unconditional
+        eps_ctx  = model(cond=ctx, por=null)         # + context only
+        eps_por  = model(cond=0, por=real)            # + porosity only
+        eps_full = model(cond=ctx, por=real)          # fully conditional
+
+        eps = eps_base
+              + context_cfg * (eps_ctx - eps_base)    # context guidance
+              + cfg_scale   * (eps_por - eps_base)    # porosity guidance
+
+    When only one guidance is active, it reduces to the standard two-call CFG.
     """
     model.eval()
     total_timesteps = diffusion.timesteps
     alphas_cumprod = diffusion.alphas_cumprod
-    use_cfg = cfg_scale > 1.0 + 1e-6
+    use_por_cfg = cfg_scale > 1.0 + 1e-6
+    use_ctx_cfg = context_cfg_scale > 1.0 + 1e-6
 
     times = torch.linspace(0, total_timesteps - 1, steps=steps, device=cond.device)
     times = torch.unique(torch.round(times).long(), sorted=True)
@@ -269,6 +336,11 @@ def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper,
     x = x * (1.0 - mask) + known_xt * mask
     x = torch.clamp(x, -safe_thresh, safe_thresh)
 
+    # Pre-build zero-context input for context-CFG (cond & mask zeroed)
+    if use_ctx_cfg:
+        cond_zero = torch.zeros_like(cond)
+        mask_zero = torch.zeros_like(mask)
+
     with torch.no_grad():
         for i, t in enumerate(times):
             t_tensor = torch.full((cond.shape[0],), t, device=cond.device, dtype=torch.long)
@@ -276,23 +348,50 @@ def ddim_sample(model, cond, mask, phi, porosity, diffusion: DiffusionHelper,
 
             model_in = torch.cat([x, cond, mask, phi], dim=1)
 
-            # ─── Conditional prediction ───
-            eps_cond = model(model_in, t_tensor, porosity)
+            if use_por_cfg and use_ctx_cfg:
+                # ─── Dual-axis CFG: 3 forward passes ───
+                # 1) fully conditional
+                eps_full = model(model_in, t_tensor, porosity)
+                # 2) no-porosity (null embedding), with context
+                eps_ctx = model(model_in, t_tensor, porosity,
+                                force_null_porosity=True)
+                # 3) no-context, with porosity
+                model_in_noctx = torch.cat([x, cond_zero, mask_zero, phi], dim=1)
+                eps_por = model(model_in_noctx, t_tensor, porosity)
+                # 4) fully unconditional (no context, no porosity)
+                eps_base = model(model_in_noctx, t_tensor, porosity,
+                                 force_null_porosity=True)
+                # Compose guidance
+                eps = (eps_base
+                       + context_cfg_scale * (eps_ctx - eps_base)
+                       + cfg_scale * (eps_por - eps_base))
 
-            if use_cfg:
-                # ─── Unconditional prediction (null porosity embedding) ───
+            elif use_por_cfg:
+                # ─── Porosity-only CFG: 2 forward passes ───
+                eps_cond = model(model_in, t_tensor, porosity)
                 eps_uncond = model(model_in, t_tensor, porosity,
                                    force_null_porosity=True)
-                # Guided combination
                 eps = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
+
+            elif use_ctx_cfg:
+                # ─── Context-only CFG: 2 forward passes ───
+                eps_with_ctx = model(model_in, t_tensor, porosity)
+                model_in_noctx = torch.cat([x, cond_zero, mask_zero, phi], dim=1)
+                eps_no_ctx = model(model_in_noctx, t_tensor, porosity)
+                eps = eps_no_ctx + context_cfg_scale * (eps_with_ctx - eps_no_ctx)
+
             else:
-                eps = eps_cond
+                eps = model(model_in, t_tensor, porosity)
 
             ab_t = alphas_cumprod[t]
             ab_prev = alphas_cumprod[t_prev] if t_prev >= 0 else torch.tensor(1.0, device=cond.device)
 
             pred_x0 = (x - torch.sqrt(1.0 - ab_t) * eps) / (torch.sqrt(ab_t) + 1e-8)
             pred_x0 = torch.clamp(pred_x0, -safe_thresh, safe_thresh)
+
+            # Recompute eps from clamped pred_x0 to keep DDIM update consistent
+            # (follows HuggingFace Diffusers' use_clipped_model_output approach)
+            eps = (x - torch.sqrt(ab_t) * pred_x0) / (torch.sqrt(1.0 - ab_t) + 1e-8)
 
             x_prev = torch.sqrt(ab_prev) * pred_x0 + torch.sqrt(1.0 - ab_prev) * eps
 
@@ -381,47 +480,39 @@ def _build_generation_batches(
     return batches
 
 
-def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, window_size: int, steps: int, seed: int):
+def _run_one_pass(
+    phi_map: np.ndarray,
+    z_full: np.ndarray,
+    known_patch: np.ndarray,
+    model,
+    diffusion,
+    patch_size: int,
+    window_size: int,
+    steps: int,
+    seed: int,
+    batches: List[List[Coord3D]],
+    order: str,
+    direction: Direction3D,
+    context_mode: str,
+    pad_mode: str,
+    cfg_scale: float,
+    context_cfg_scale: float,
+    desc: str = "GeneratePatches",
+):
+    """Execute a single autoregressive pass over all patches.
+
+    Modifies ``z_full`` and ``known_patch`` **in place**.
+    """
     device = next(model.parameters()).device
-    C = CONFIG["out_channels"]
-
-    gD, gH, gW = phi_map.shape
-    D, H, W = gD * patch_size, gH * patch_size, gW * patch_size
-    z_full = np.zeros((C, D, H, W), dtype=np.float32)
-    known_patch = np.zeros((gD, gH, gW), dtype=bool)
-
+    C = int(CONFIG["out_channels"])
     w = window_size
     r = w // 2
-    order, direction = _select_infer_order_and_direction(seed)
-    context_mode = _normalize_context_mode(CONFIG.get("context_mode", "causal"))
-    pad_mode = _normalize_pad_mode(CONFIG.get("pad_mode", "edge"))
-    max_patch_batch = int(CONFIG.get("infer_max_patch_batch", 16))
-    if max_patch_batch < 1:
-        max_patch_batch = 1
-
-    # full context is only meaningful during training; inference must rely on generated history.
-    if context_mode == "full":
-        print("[warn] context_mode='full' is not autoregressive for inference; fallback to causal.")
-        context_mode = "causal"
-    print(f"[infer] traversal order={order}, direction={_direction_str(direction)}, context_mode={context_mode}")
-
-    phi_pad = _pad_with_mode(phi_map, ((r, r), (r, r), (r, r)), pad_mode)
     pad_p = r * patch_size
     global_phi_val = float(phi_map.mean())
-
-    batches = _build_generation_batches(
-        gD=gD,
-        gH=gH,
-        gW=gW,
-        window_size=w,
-        context_mode=context_mode,
-        order=order,
-        direction=direction,
-        max_patch_batch=max_patch_batch,
-    )
-
+    gD, gH, gW = phi_map.shape
+    phi_pad = _pad_with_mode(phi_map, ((r, r), (r, r), (r, r)), pad_mode)
     total_patches = gD * gH * gW
-    pbar = tqdm(total=total_patches, desc="GeneratePatches")
+    pbar = tqdm(total=total_patches, desc=desc)
     patch_counter = 0
 
     for coord_batch in batches:
@@ -513,22 +604,140 @@ def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, wind
             steps=steps,
             seed=batch_seed,
             safe_thresh=CONFIG["safe_threshold"],
-            cfg_scale=float(CONFIG.get("cfg_scale", 1.0)),
+            cfg_scale=cfg_scale,
+            context_cfg_scale=context_cfg_scale,
         )
         x_np = x.detach().cpu().float().numpy()
+
+        # Latent variance rescaling 参数
+        rescale_strength = float(CONFIG.get("infer_latent_rescale_strength", 0.0))
+        scale_factor = float(CONFIG.get("scale_factor", 1.0))
 
         c0 = r * patch_size
         c1 = c0 + patch_size
         for bi, (i, j, k) in enumerate(coord_batch):
+            patch_out = x_np[bi, :, c0:c1, c0:c1, c0:c1]  # (C, p, p, p) scaled
+
+            # ── Per-patch latent variance rescaling ──
+            # 模型倾向生成低方差 latent（均值回归），此处根据目标 phi 补偿方差。
+            if rescale_strength > 0.0:
+                rock_rate_ijk = float(phi_map[i, j, k])
+                target_std_unscaled = _expected_latent_std(rock_rate_ijk)
+                # 生成的 patch 是 scaled 空间，target 也要转换
+                target_std_scaled = target_std_unscaled * scale_factor
+                patch_out = _rescale_patch_variance(
+                    patch_out, target_std_scaled, strength=rescale_strength
+                )
+
             ti0, tj0, tk0 = i * patch_size, j * patch_size, k * patch_size
             ti1, tj1, tk1 = ti0 + patch_size, tj0 + patch_size, tk0 + patch_size
-            z_full[:, ti0:ti1, tj0:tj1, tk0:tk1] = x_np[bi, :, c0:c1, c0:c1, c0:c1]
+            z_full[:, ti0:ti1, tj0:tj1, tk0:tk1] = patch_out
             known_patch[i, j, k] = True
 
         patch_counter += len(coord_batch)
         pbar.update(len(coord_batch))
 
     pbar.close()
+
+
+def generate_volume(phi_map: np.ndarray, model, diffusion, patch_size: int, window_size: int, steps: int, seed: int):
+    """Generate a full latent volume with optional Draft → Refine passes.
+
+    Pass 0 (Draft): autoregressive generation, early patches have little/no
+    context.  Uses fewer DDIM steps (controlled by ``infer_draft_steps_ratio``)
+    when refine passes are enabled, for speed.
+
+    Pass 1..N (Refine): re-generate every patch using the previous pass output
+    as context.  Every patch now has full-window neighbours, closely matching
+    the training distribution.  Uses full ``ddim_steps``.
+    """
+    device = next(model.parameters()).device
+    C = CONFIG["out_channels"]
+
+    gD, gH, gW = phi_map.shape
+    D, H, W = gD * patch_size, gH * patch_size, gW * patch_size
+    z_full = np.zeros((C, D, H, W), dtype=np.float32)
+    known_patch = np.zeros((gD, gH, gW), dtype=bool)
+
+    w = window_size
+    r = w // 2
+    order, direction = _select_infer_order_and_direction(seed)
+    context_mode = _normalize_context_mode(CONFIG.get("context_mode", "causal"))
+    pad_mode = _normalize_pad_mode(CONFIG.get("pad_mode", "edge"))
+    max_patch_batch = int(CONFIG.get("infer_max_patch_batch", 16))
+    if max_patch_batch < 1:
+        max_patch_batch = 1
+
+    if context_mode == "full":
+        print("[warn] context_mode='full' is not autoregressive for inference; fallback to causal.")
+        context_mode = "causal"
+    print(f"[infer] traversal order={order}, direction={_direction_str(direction)}, context_mode={context_mode}")
+
+    cfg_scale = float(CONFIG.get("cfg_scale", 1.0))
+    context_cfg_scale = float(CONFIG.get("context_cfg_scale", 1.0))
+    refine_passes = max(0, int(CONFIG.get("infer_refine_passes", 0)))
+    draft_ratio = float(CONFIG.get("infer_draft_steps_ratio", 0.5))
+
+    batches = _build_generation_batches(
+        gD=gD, gH=gH, gW=gW,
+        window_size=w,
+        context_mode=context_mode,
+        order=order,
+        direction=direction,
+        max_patch_batch=max_patch_batch,
+    )
+
+    # ─── Draft pass (pass 0) ───
+    draft_steps = max(10, int(round(steps * draft_ratio))) if refine_passes > 0 else steps
+    print(f"[infer] Draft pass: {draft_steps} DDIM steps (refine_passes={refine_passes})")
+
+    _run_one_pass(
+        phi_map=phi_map, z_full=z_full, known_patch=known_patch,
+        model=model, diffusion=diffusion,
+        patch_size=patch_size, window_size=window_size,
+        steps=draft_steps, seed=seed,
+        batches=batches, order=order, direction=direction,
+        context_mode=context_mode, pad_mode=pad_mode,
+        cfg_scale=cfg_scale, context_cfg_scale=context_cfg_scale,
+        desc="Draft",
+    )
+
+    # ─── Refine passes ───
+    # In refine, every patch is re-generated with ALL neighbours already filled
+    # from the previous pass → known_patch is all-True, mask is fully populated.
+    # This brings inference in line with the training distribution.
+    for rp in range(refine_passes):
+        refine_seed = seed + 10000 * (rp + 1) if seed is not None else None
+        # known_patch stays all-True from the draft pass
+        # But we need to re-run generation for every patch
+        # Reset known_patch so _run_one_pass fills them in order again
+        # BUT keep z_full (previous pass output) as context source
+        known_patch[:] = True  # all patches have content from previous pass
+
+        # For refine, we use full steps and full batches
+        # Build "refine batches" where every patch can be done in any order
+        # since all neighbours are known. We can batch more aggressively.
+        refine_batches = _build_generation_batches(
+            gD=gD, gH=gH, gW=gW,
+            window_size=w,
+            context_mode=context_mode,
+            order=order,
+            direction=direction,
+            max_patch_batch=max_patch_batch,
+        )
+
+        print(f"[infer] Refine pass {rp+1}/{refine_passes}: {steps} DDIM steps")
+        _run_one_pass(
+            phi_map=phi_map, z_full=z_full, known_patch=known_patch,
+            model=model, diffusion=diffusion,
+            patch_size=patch_size, window_size=window_size,
+            steps=steps, seed=refine_seed,
+            batches=refine_batches, order=order, direction=direction,
+            context_mode=context_mode, pad_mode=pad_mode,
+            cfg_scale=cfg_scale, context_cfg_scale=context_cfg_scale,
+            desc=f"Refine-{rp+1}",
+        )
+
     return z_full
 
 
