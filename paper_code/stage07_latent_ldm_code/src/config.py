@@ -144,7 +144,7 @@ CONFIG = {
     "infer_random_direction": True,
     "infer_direction": "+++",
     "infer_max_patch_batch": 16,
-    "infer_use_ema": False,
+    "infer_use_ema": True,
     # Classifier-Free Guidance scale：>1 时增强孔隙率条件响应，1.0 表示不使用 CFG
     "cfg_scale": 1.0,            # 关闭 CFG 测试纯模型输出
     # 两阶段推理：Draft 阶段用较少步数快速生成全体积，Refine 阶段以 Draft 结果为上下文精修
@@ -157,9 +157,9 @@ CONFIG = {
     # strength ∈ [0,1]：0=关闭，1=完全校正到目标 std，0.5=半强度软校正
     "infer_latent_rescale_strength": 0.0,
     # "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v8\models\unet_epoch_40.pth",
-    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v5\models\unet_epoch_22.pth",
+    "ckpt_path": r"D:\多尺度岩心数据集\LDM 模型参数\unet_epoch_52.pth",
     # "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v8\models\unet_epoch_30.pth",
-    "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z3008_y128_x384.npy",
+    "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z1728_y512_x512.npy",
     # "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z768_y320_x448.npy",
     # "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z1920_y128_x320.npy",
     # "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-21_Global_Consistency_z4672_y256_x320.npy",

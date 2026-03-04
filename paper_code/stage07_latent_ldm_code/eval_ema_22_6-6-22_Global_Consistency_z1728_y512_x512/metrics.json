@@ -1,0 +1,40 @@
+{
+  "pred_latent_path": "E:\\chendou\\paper_code\\stage07_latent_ldm_code\\generated_latent.npy",
+  "gt_latent_path": "D:\\多尺度岩心数据集\\LDM_Data\\Latent_NPY\\w192_s64\\6-6-22_Global_Consistency_z1728_y512_x512.npy",
+  "gt_voxel_path": "D:\\多尺度岩心数据集\\LDM_Data\\Raw_NPY\\w192_s64\\6-6-22_Global_Consistency_z1728_y512_x512.npy",
+  "gt_phi_path": "D:\\多尺度岩心数据集\\LDM_Data\\Phi_Maps_NPY\\w192_s64\\6-6-22_Global_Consistency_z1728_y512_x512.npy",
+  "pred_shape": [
+    4,
+    24,
+    24,
+    24
+  ],
+  "pred_min": -5.658403396606445,
+  "pred_max": 5.671311855316162,
+  "pred_mean": 0.20733286440372467,
+  "pred_std": 0.978470504283905,
+  "latent_mae": 0.8158630728721619,
+  "latent_mse": 1.2172884941101074,
+  "latent_rmse": 1.1033079624176025,
+  "latent_eval_shape": [
+    4,
+    24,
+    24,
+    24
+  ],
+  "voxel_dice": 0.9151600438665779,
+  "voxel_iou": 0.8435899126801928,
+  "voxel_precision": 0.8795335466076933,
+  "voxel_recall": 0.9537945674428536,
+  "porosity_pred": 0.9514206780327691,
+  "porosity_gt": 0.8773444846824363,
+  "porosity_abs_err": 0.07407619335033278,
+  "bin_phi_mae": 0.11817692220211029,
+  "bin_phi_mse": 0.05706330016255379,
+  "bin_phi_rmse": 0.2388792634010315,
+  "bin_phi_corr": 0.01862166176813186,
+  "prob_phi_mae": 0.11801986396312714,
+  "prob_phi_mse": 0.05688714236021042,
+  "prob_phi_rmse": 0.23851025104522705,
+  "prob_phi_corr": 0.01905717821475476
+}
