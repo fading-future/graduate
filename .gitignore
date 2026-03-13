@@ -31,3 +31,6 @@ pytorch_pkgs
 # 网格搜索结果
 **search_stageB/
 **search_stageA/
+
+eval_multitoken_phi_batch_rockrate_balanced_600x3_resume
+eval_multitoken_phi_batch_rockrate
