@@ -6,7 +6,7 @@ import torch
 
 CONFIG = {
     # ------------------ 实验配置 ------------------
-    "experiment_name": "stage07_patch_ldm_v8",
+    "experiment_name": "stage07_patch_ldm_v9",
     "note": "v7.1基础上新增Context Dropout训练+两阶段Draft-Refine推理+Context-CFG，弥合训练-推理上下文鸿沟",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 
@@ -42,6 +42,12 @@ CONFIG = {
     "porosity_mode": "mix",
     "porosity_mix_alpha": 0.9,
     "use_global_phi_channel": True,
+    # 动态 porosity 条件：按“已知上下文 + 当前目标 patch”计算窗口内 φ'，
+    # 以减小训练/推理语义漂移（避免始终使用完整体全局均值）。
+    "use_dynamic_porosity_condition": True,
+    "dynamic_phi_include_target": True,
+    # 当 use_global_phi_channel=True 时，第二个 phi 通道是否也用动态 φ'。
+    "dynamic_global_phi_channel": True,
 
     # 上下文与遍历策略
     "context_mode": "causal",  # causal | wavefront | full
@@ -156,8 +162,8 @@ CONFIG = {
     # 根据目标 phi_map(rock_rate) 估算期望 latent_std，对每个 patch 做方差校正
     # strength ∈ [0,1]：0=关闭，1=完全校正到目标 std，0.5=半强度软校正
     "infer_latent_rescale_strength": 0.0,
-    # "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v8\models\unet_epoch_40.pth",
-    "ckpt_path": r"D:\多尺度岩心数据集\LDM 模型参数\unet_epoch_52.pth",
+    "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v9\models\unet_epoch_43.pth",
+    # "ckpt_path": r"D:\多尺度岩心数据集\LDM 模型参数\unet_epoch_52.pth",
     # "ckpt_path": r"E:\chendou\paper_code\stage07_latent_ldm_code\exp_results\stage07_patch_ldm_v8\models\unet_epoch_30.pth",
     "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z1728_y512_x512.npy",
     # "phi_map_path": r"D:\多尺度岩心数据集\LDM_Data\Phi_Maps_NPY\w192_s64\6-6-22_Global_Consistency_z768_y320_x448.npy",

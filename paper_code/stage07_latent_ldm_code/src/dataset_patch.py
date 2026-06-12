@@ -36,6 +36,14 @@ def _repeat_phi(phi_patch: np.ndarray, patch_size: int) -> np.ndarray:
     return out
 
 
+def _masked_mean_with_fallback(values: np.ndarray, mask: np.ndarray, fallback: float) -> float:
+    """返回 values 在 mask>0.5 区域的均值；若为空则回退 fallback。"""
+    sel = mask > 0.5
+    if not np.any(sel):
+        return float(fallback)
+    return float(values[sel].mean())
+
+
 def _pad_with_mode(x: np.ndarray, pad_width, mode: str) -> np.ndarray:
     """按给定模式做 padding；当 reflect 非法时自动回退到 edge。"""
     # numpy reflect mode requires pad < axis length; fallback to edge if invalid
@@ -266,6 +274,9 @@ class PatchLatentDataset(Dataset):
         self.porosity_mode = str(CONFIG.get("porosity_mode", "local")).lower()
         self.porosity_mix_alpha = float(CONFIG.get("porosity_mix_alpha", 0.7))
         self.use_global_phi_channel = bool(CONFIG.get("use_global_phi_channel", False))
+        self.use_dynamic_porosity_condition = bool(CONFIG.get("use_dynamic_porosity_condition", False))
+        self.dynamic_phi_include_target = bool(CONFIG.get("dynamic_phi_include_target", True))
+        self.dynamic_global_phi_channel = bool(CONFIG.get("dynamic_global_phi_channel", True))
         self.porosity_map = _load_porosity_map(CONFIG.get("porosity_csv", ""))
         # Context Dropout：以一定概率将所有上下文 patch 置零，模拟推理时无上下文场景
         self.context_drop_prob = float(CONFIG.get("context_drop_prob", 0.0))
@@ -623,10 +634,17 @@ class PatchLatentDataset(Dataset):
         local_phi_val = float(phi_map[ti, tj, tk])
         global_phi_val = float(phi_map.mean())
 
+        dynamic_mask_patch = mask_patch.copy()
+        if self.dynamic_phi_include_target:
+            dynamic_mask_patch[r, r, r] = 1.0
+        dynamic_phi_val = _masked_mean_with_fallback(phi_win, dynamic_mask_patch, fallback=global_phi_val)
+        global_like_phi_val = dynamic_phi_val if self.use_dynamic_porosity_condition else global_phi_val
+
         # 4) 构建 Phi 体条件（局部 phi，可选叠加全局 phi 通道）
         local_phi_vol = _repeat_phi(phi_win, p)
         if self.use_global_phi_channel:
-            global_phi_patch = np.full_like(phi_win, global_phi_val, dtype=np.float32)
+            global_phi_ch_val = global_like_phi_val if self.dynamic_global_phi_channel else global_phi_val
+            global_phi_patch = np.full_like(phi_win, global_phi_ch_val, dtype=np.float32)
             global_phi_vol = _repeat_phi(global_phi_patch, p)
             phi_vol = np.stack([local_phi_vol, global_phi_vol], axis=0)
         else:
@@ -634,10 +652,13 @@ class PatchLatentDataset(Dataset):
 
         # 构建 Porosity 标量条件（local / global / mix）
         if self.porosity_mode == "global":
-            por = self.porosity_map.get(base_name, global_phi_val)
+            if self.use_dynamic_porosity_condition:
+                por = global_like_phi_val
+            else:
+                por = self.porosity_map.get(base_name, global_phi_val)
         elif self.porosity_mode in ("mix", "local_global_mix"):
             a = float(np.clip(self.porosity_mix_alpha, 0.0, 1.0))
-            por = a * local_phi_val + (1.0 - a) * global_phi_val
+            por = a * local_phi_val + (1.0 - a) * global_like_phi_val
         else:
             por = local_phi_val
         porosity = np.array([por], dtype=np.float32)

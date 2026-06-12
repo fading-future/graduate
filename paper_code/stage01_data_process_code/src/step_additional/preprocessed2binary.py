@@ -6,6 +6,7 @@ os.environ["CV_NUM_THREADS"] = "1"
 
 import glob
 import re
+import argparse
 import cv2
 import numpy as np
 import random
@@ -14,9 +15,9 @@ from tqdm import tqdm
 
 # ================= 配置区域 =================
 # 【注意】这里的输入目录应该指向您跑完 "三合一预处理" 后的文件夹
-INPUT_DIR = r"D:\多尺度岩心数据集\Lastest_Preprocess\Gray_Preprocessed_Slices\6-6-18"
-OUTPUT_DIR = r"D:\多尺度岩心数据集\Lastest_Preprocess\Binary_Preprocessed_Slices\6-6-18" 
-FILE_EXT = "*.tif"
+INPUT_DIR = r"D:\浅层礁灰岩数据集\Preprocessed_Slices"
+OUTPUT_DIR = r"D:\浅层礁灰岩数据集\binary_image" 
+FILE_PATTERNS = ("*.tif", "*.tiff")
 
 CONFIG = {
     'roi_sample_count': 500,      # 寻找 ROI 的采样数
@@ -30,6 +31,27 @@ def natural_sort_key(filepath):
     filename = os.path.basename(filepath)
     numbers = re.findall(r'\d+', filename)
     return int(numbers[-1]) if numbers else 0
+
+def list_tiff_files(folder_path):
+    files = []
+    for pattern in FILE_PATTERNS:
+        files.extend(glob.glob(os.path.join(folder_path, pattern)))
+    return sorted(files, key=natural_sort_key)
+
+def discover_input_folders(input_dir):
+    direct_files = list_tiff_files(input_dir)
+    if direct_files:
+        return [(input_dir, None)]
+
+    folder_jobs = []
+    for entry in sorted(os.listdir(input_dir)):
+        folder_path = os.path.join(input_dir, entry)
+        if not os.path.isdir(folder_path):
+            continue
+        tif_files = list_tiff_files(folder_path)
+        if tif_files:
+            folder_jobs.append((folder_path, entry))
+    return folder_jobs
 
 def _read_img_raw(filepath):
     try:
@@ -78,7 +100,7 @@ def detect_global_roi_v3(files, sample_count=100):
     valid_rois = np.array(valid_rois)
     avg_center = np.median(valid_rois[:, :2], axis=0).astype(int)
     max_radius = int(np.percentile(valid_rois[:, 2], 90)) 
-    print(f"✅ ROI 锁定: Center={avg_center}, Radius={max_radius}")
+    print(f"[OK] ROI locked: Center={avg_center}, Radius={max_radius}")
     return avg_center, max_radius
 
 # ================= 2. 计算全局统一 Otsu 基准值 =================
@@ -112,13 +134,13 @@ def calculate_global_otsu_base(files, center, radius):
             pixel_reservoir.append(valid_pixels)
             
     if not pixel_reservoir:
-        print("⚠️ 无法计算全局阈值，将使用默认值 128")
+        print("[WARN] Unable to compute global threshold, fallback to 128")
         return 128.0
         
     all_pixels = np.concatenate(pixel_reservoir)
     otsu_val, _ = cv2.threshold(all_pixels, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    print(f"✅ 全局 Otsu 基准值 (8-bit): {otsu_val}")
+    print(f"[OK] Global Otsu baseline (8-bit): {otsu_val}")
     return otsu_val
 
 # ================= 3. 交互式选择器 =================
@@ -162,13 +184,22 @@ def process_single_fixed_thresh(sample_img, center, radius, fixed_thresh_val):
         
     return crop_8u, bin_img
 
-def interactive_threshold_selector_global(files, center, radius, global_base_otsu):
+def interactive_threshold_selector_global(files, center, radius, global_base_otsu,
+                                         auto_mode=False, auto_factor=1.0):
     print("\n" + "="*60)
     print(" >>> 进入【全局一致性】阈值调节模式 <<<")
     print("="*60)
 
     current_factor = 1.0
     sample_img, fname = get_random_valid_sample(files)
+    if sample_img is None:
+        print("No valid sample found for preview. Falling back to global Otsu threshold.")
+        return float(global_base_otsu)
+
+    if auto_mode:
+        current_abs_thresh = global_base_otsu * auto_factor
+        print(f"Auto mode enabled: factor={auto_factor} -> thresh={current_abs_thresh:.2f}")
+        return float(current_abs_thresh)
     
     while True:
         current_abs_thresh = global_base_otsu * current_factor
@@ -193,7 +224,7 @@ def interactive_threshold_selector_global(files, center, radius, global_base_ots
         plt.close() 
 
         if user_input in ['run', 'ok', 'yes', 'y']:
-            print(f"✅ 最终确认系数: {current_factor}")
+            print(f"[OK] Final factor: {current_factor}")
             print(f"🔒 全局锁定阈值: {current_abs_thresh:.2f}")
             return current_abs_thresh 
         elif user_input == 'check':
@@ -253,8 +284,85 @@ def process_slice_final_fixed(img, center, radius, fixed_thresh_val):
                     
     return final_img
 
+def process_single_folder(input_dir, output_dir, auto_mode=False, auto_factor=1.0):
+    files = list_tiff_files(input_dir)
+    if not files:
+        print(f"[ERROR] No files found, please check path: {input_dir}")
+        return False
+
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n{'=' * 70}")
+    print(f"Input : {input_dir}")
+    print(f"Output: {output_dir}")
+    print(f"Files : {len(files)}")
+    print(f"{'=' * 70}")
+
+    roi_center, roi_radius = detect_global_roi_v3(files, CONFIG['roi_sample_count'])
+    global_base = calculate_global_otsu_base(files, roi_center, roi_radius)
+    final_fixed_thresh = interactive_threshold_selector_global(
+        files, roi_center, roi_radius, global_base,
+        auto_mode=auto_mode, auto_factor=auto_factor
+    )
+
+    print(f"\nStep 3: Start batch processing... (fixed threshold {final_fixed_thresh:.2f})")
+    for fpath in tqdm(files):
+        try:
+            fname = os.path.basename(fpath)
+            save_path = os.path.join(output_dir, fname)
+
+            img = _read_img_raw(fpath)
+            if img is None:
+                out_size = 2 * roi_radius
+                dummy = np.zeros((out_size, out_size), dtype=np.uint8)
+                _save_img_safe(save_path, dummy)
+                continue
+
+            res = process_slice_final_fixed(img, roi_center, roi_radius, final_fixed_thresh)
+            _save_img_safe(save_path, res)
+
+        except Exception as e:
+            print(f"Error {fpath}: {e}")
+
+    print(f"[OK] Finished: {input_dir}")
+    return True
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Convert preprocessed CT slices to binary slices.")
+    parser.add_argument("--input-dir", default=INPUT_DIR, help="Input directory or root directory.")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Output directory or root directory.")
+    parser.add_argument("--auto", action="store_true", help="Run without interactive threshold tuning.")
+    parser.add_argument("--factor", type=float, default=1.0, help="Threshold factor used in auto mode.")
+    return parser.parse_args()
+
 # ================= 主程序 =================
 def main():
+    args = parse_args()
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+
+    if not os.path.isdir(input_dir):
+        print(f"[ERROR] Input directory does not exist: {input_dir}")
+        return
+
+    folder_jobs = discover_input_folders(input_dir)
+    if not folder_jobs:
+        print(f"[ERROR] No .tif/.tiff files found under {input_dir}")
+        return
+
+    total_ok = 0
+    for src_dir, rel_name in folder_jobs:
+        dst_dir = output_dir if rel_name is None else os.path.join(output_dir, rel_name)
+        ok = process_single_folder(
+            src_dir,
+            dst_dir,
+            auto_mode=args.auto,
+            auto_factor=args.factor
+        )
+        total_ok += int(ok)
+
+    print(f"\n[OK] All done. Processed {total_ok}/{len(folder_jobs)} input folders successfully.")
+    return
+
     files = glob.glob(os.path.join(INPUT_DIR, FILE_EXT))
     files.sort(key=natural_sort_key)
     if not files: 

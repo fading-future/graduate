@@ -20,14 +20,13 @@ import multiprocessing
 
 # ================= 全局配置 =================
 CONFIG = {
-    "src_root": r"D:\多尺度岩心数据集",         # 原始 CT 文件夹
-    "dst_root": r"D:\多尺度岩心数据集\Preprocessed_Slices", # 一站式输出文件夹
+    "src_root": r"D:\浅层礁灰岩数据集",         # 原始 CT 文件夹
+    "dst_root": r"D:\浅层礁灰岩数据集\Preprocessed_Slices", # 一站式输出文件夹
     
     "target_folders": [
-        "6-6-18",
-        "6-6-21",
-        "6-6-22",
-        "6-6-24"
+        "XY",
+        "XY1",
+        "XY2"
     ],
     
     "max_workers": 12, # 物理核心数
@@ -53,6 +52,11 @@ def _read_img_raw(path):
         return cv2.imdecode(raw_data, cv2.IMREAD_UNCHANGED)
     except:
         return None
+
+def _list_input_tiff_files(folder_path):
+    tif_files = glob.glob(os.path.join(folder_path, "*.tif"))
+    tiff_files = glob.glob(os.path.join(folder_path, "*.tiff"))
+    return sorted(tif_files + tiff_files)
 
 def _detect_global_roi(files, sample_count=50):
     """提取岩心圆形 ROI，屏蔽外部空气"""
@@ -132,7 +136,7 @@ def calculate_core_global_stats(folder_path, roi_info):
     1. 计算 Raw 数据的基准峰值
     2. 虚拟应用锚定，并计算锚定后数据的 P1 和 P99 (完美衔接 Soft-Tanh)
     """
-    files = glob.glob(os.path.join(folder_path, "*.tif"))
+    files = _list_input_tiff_files(folder_path)
     if not files: return None
     
     sample_files = random.sample(files, min(len(files), 150))
@@ -226,24 +230,41 @@ def worker_process_slice(args):
 # ================= 主流程 =================
 def run_unified_pipeline():
     print("🚀 启动终极预处理流水线 [锚定 -> Soft-Tanh -> NLM]")
+    print(f"   Source root: {CONFIG['src_root']}")
+    print(f"   Output root: {CONFIG['dst_root']}")
+
+    folders_with_input = 0
+    completed_folders = 0
     
     for folder_name in CONFIG["target_folders"]:
         src_folder = os.path.join(CONFIG["src_root"], folder_name)
         dst_folder = os.path.join(CONFIG["dst_root"], folder_name)
         
-        files = glob.glob(os.path.join(src_folder, "*.tif"))
-        if not files: continue
+        if not os.path.isdir(src_folder):
+            print(f"\n[SKIP] Input folder does not exist: {src_folder}")
+            continue
+
+        files = _list_input_tiff_files(src_folder)
+        if not files:
+            print(f"\n[SKIP] No .tif/.tiff files found in {src_folder}")
+            continue
+
+        folders_with_input += 1
             
         Path(dst_folder).mkdir(parents=True, exist_ok=True)
         print(f"\n📂 正在处理岩心: {folder_name} (共 {len(files)} 张切片)")
         
         # 1. 自动探测 ROI
         roi_info = _detect_global_roi(files, sample_count=1000)
-        if not roi_info: continue
+        if not roi_info:
+            print(f"   [SKIP] ROI detection failed for {folder_name}")
+            continue
             
         # 2. 一站式计算物理参数 (锚定峰值 & 锚定后的 P1/P99)
         stats = calculate_core_global_stats(src_folder, roi_info)
-        if not stats: continue
+        if not stats:
+            print(f"   [SKIP] Global statistics calculation failed for {folder_name}")
+            continue
         core_ref_peak, p1, p99 = stats
             
         print(f"   ⚓ 锚定前峰值: {core_ref_peak} -> 锚定目标: {CONFIG['target_peak']}")
@@ -256,8 +277,14 @@ def run_unified_pipeline():
             for result in tqdm(executor.map(worker_process_slice, tasks, chunksize=50), 
                                total=len(tasks), desc="   ⚙️ 处理进度"):
                 if result: success_count += 1
-                    
+
+        completed_folders += 1
         print(f"   🎉 {folder_name} 预处理彻底完成！成功: {success_count}/{len(files)}")
+
+    if folders_with_input == 0:
+        print("\nNo input folders were processed. Check src_root, target_folders, and whether .tif files exist.")
+    else:
+        print(f"\nPipeline finished. Completed folders: {completed_folders}/{folders_with_input}")
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()

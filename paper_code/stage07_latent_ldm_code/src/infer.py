@@ -167,6 +167,13 @@ def _repeat_phi(phi_patch: np.ndarray, patch_size: int) -> np.ndarray:
     return out
 
 
+def _masked_mean_with_fallback(values: np.ndarray, mask: np.ndarray, fallback: float) -> float:
+    sel = mask > 0.5
+    if not np.any(sel):
+        return float(fallback)
+    return float(values[sel].mean())
+
+
 def _pad_with_mode(x: np.ndarray, pad_width, mode: str) -> np.ndarray:
     # numpy reflect mode requires pad < axis length; fallback to edge if invalid
     if mode == "reflect":
@@ -509,6 +516,9 @@ def _run_one_pass(
     r = w // 2
     pad_p = r * patch_size
     global_phi_val = float(phi_map.mean())
+    use_dynamic_porosity_condition = bool(CONFIG.get("use_dynamic_porosity_condition", False))
+    dynamic_phi_include_target = bool(CONFIG.get("dynamic_phi_include_target", True))
+    dynamic_global_phi_channel = bool(CONFIG.get("dynamic_global_phi_channel", True))
     gD, gH, gW = phi_map.shape
     phi_pad = _pad_with_mode(phi_map, ((r, r), (r, r), (r, r)), pad_mode)
     total_patches = gD * gH * gW
@@ -561,9 +571,15 @@ def _run_one_pass(
 
             mask = _repeat_phi(mask_patch, patch_size)[None, ...]
             cond = z_win * mask
+            dynamic_mask_patch = mask_patch.copy()
+            if dynamic_phi_include_target:
+                dynamic_mask_patch[r, r, r] = 1.0
+            dynamic_phi_val = _masked_mean_with_fallback(phi_win, dynamic_mask_patch, fallback=global_phi_val)
+            global_like_phi_val = dynamic_phi_val if use_dynamic_porosity_condition else global_phi_val
             local_phi_vol = _repeat_phi(phi_win, patch_size)
             if _phi_channels() >= 2:
-                global_phi_patch = np.full_like(phi_win, global_phi_val, dtype=np.float32)
+                global_phi_ch_val = global_like_phi_val if dynamic_global_phi_channel else global_phi_val
+                global_phi_patch = np.full_like(phi_win, global_phi_ch_val, dtype=np.float32)
                 global_phi_vol = _repeat_phi(global_phi_patch, patch_size)
                 phi_vol = np.stack([local_phi_vol, global_phi_vol], axis=0)
             else:
@@ -572,10 +588,10 @@ def _run_one_pass(
             por_mode = str(CONFIG.get("porosity_mode", "local")).lower()
             local_phi_val = float(phi_map[i, j, k])
             if por_mode == "global":
-                porosity = global_phi_val
+                porosity = global_like_phi_val
             elif por_mode in ("mix", "local_global_mix"):
                 a = float(np.clip(CONFIG.get("porosity_mix_alpha", 0.7), 0.0, 1.0))
-                porosity = a * local_phi_val + (1.0 - a) * global_phi_val
+                porosity = a * local_phi_val + (1.0 - a) * global_like_phi_val
             else:
                 porosity = local_phi_val
 

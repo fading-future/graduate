@@ -1,9 +1,0 @@
-metric,value
-voxel_dice_mean,0.988583489474998
-voxel_iou_mean,0.9774852386648633
-pore_porosity_abs_err_mean,0.01975626667971334
-phi16_pore_mae_mean,0.019854224337892346
-phi16_pore_corr_mean,0.9869315939087734
-tp2_corr_mean,0.9991210286586568
-tp2_mae_mean,0.010799830034435562
-time_sec_mean,14.646330140885853

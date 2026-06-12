@@ -11,26 +11,73 @@ wheels/
 
 # 图片
 *.gif
-*.tif 
+*.tif
 *.tiff
 *.bmp
+*.jpg
+*.jpeg
+*.png
 
 # 模型参数
 *.pth
 *.pt
+*.safetensors
+*.onnx
 
 # 数据
 paper_data
 pytorch_pkgs
 *.npy
 *.npz
+*.raw
+*.bin
+
+# 原始CT数据目录
+6-6-23/
+6-6-22/
+6-6-21/
+6-6-24/
+
+# 实验结果（含模型参数）
+paper_code/**/exp_results/
+paper_code/**/experiments/
+paper_code/**/eval_*/
+paper_code/**/eval_batch_*/
+paper_code/**/outputs/
+paper_code/**/checkpoints/
+
+# 评估结果目录
+eval_multitoken_phi_batch_rockrate_balanced_600x3_resume
+eval_multitoken_phi_batch_rockrate
+**search_stageB/
+**search_stageA/
+
+# 毕业交接目录（数据量太大，代码版本不需要）
+陈豆-毕业交接/
+
+# PDF文件（如需保留可以手动add）
+*.pdf
 
 # mac 电脑的隐藏文件
 .DS_Store
 
-# 网格搜索结果
-**search_stageB/
-**search_stageA/
+# Windows 系统文件
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-eval_multitoken_phi_batch_rockrate_balanced_600x3_resume
-eval_multitoken_phi_batch_rockrate
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 日志
+*.log
+logs/
+*.csv
+
+# 压缩包
+*.zip
+*.tar.gz
+*.rar
+*.7z

@@ -18,6 +18,11 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(errors="replace")
+
 # ==============================================================================
 #  配置中心
 # ==============================================================================
@@ -41,6 +46,18 @@ CONFIG = {
     'max_workers': 4, 
     'debug_mode': True 
 }
+
+# Override config for the current shallow limestone binary-slice dataset.
+CONFIG.update({
+    'src_root': r"D:\浅层礁灰岩数据集\binary_image",
+    'dst_root': r"D:\浅层礁灰岩数据集\Final_Result_Sorted_w256_s32",
+    'target_folders': ["XY", "XY1", "XY2"],
+    'crop_size': 256,
+    'stride_z': 32,
+    'stride_xy': 32,
+})
+
+FILE_PATTERNS = ("*.tif", "*.tiff")
 
 # ==============================================================================
 #  核心修复：排序函数
@@ -73,6 +90,12 @@ def _read_binary_img(path):
         return img
     except:
         return None
+
+def _list_binary_slice_files(folder_path):
+    files = []
+    for pattern in FILE_PATTERNS:
+        files.extend(glob.glob(os.path.join(folder_path, pattern)))
+    return sorted(files, key=strict_sort_key)
 
 def _fill_holes_and_close(binary_img, close_ksize):
     # 步骤 1：闭运算连接断裂处
@@ -219,8 +242,10 @@ def run_pipeline():
         folder_path = os.path.join(CONFIG['src_root'], folder_name)
         
         # --- 核心修复：排序检查 ---
-        files = glob.glob(os.path.join(folder_path, "*.tif"))
-        files = sorted(files, key=strict_sort_key)
+        files = _list_binary_slice_files(folder_path)
+        if not files:
+            print(f"[WARN] No tif/tiff files found in: {folder_path}")
+            continue
         
         print(f"\n📂 正在处理文件夹: {folder_name}")
         print(f"   共发现 {len(files)} 个文件")
